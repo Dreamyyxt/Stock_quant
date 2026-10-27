@@ -93,6 +93,9 @@ class Capabilities:
     symbol_rules: Mapping[str, SymbolRules] = field(default_factory=dict)
     declared_from: str = ""
     verified_at: Optional[datetime] = None
+    #: 是否支持碎股。只有能拿到"标的级"碎股属性时才该置 True ——
+    #: 碎股改变的是 `qty_step`，猜错的后果是每一单都被场所按"非整数股"拒掉。
+    supports_fractional: bool = False
 
     def __post_init__(self):
         if not self.venue:
@@ -416,6 +419,26 @@ VENUE_PROFILES: Dict[str, Capabilities] = {
                                   min_qty=Decimal("0.00000001"),
                                   min_notional=Decimal("1")),
         declared_from="coinbase advanced trade api docs",
+    ),
+    # 美股（B11）。声明值全部是**实测过的**，不是抄文档：
+    #   · orders:by_client_order_id 会回 404 + "order not found"（端点活着）
+    #   · DELETE 只认场所自己的 order_id，不认 client_order_id → 撤单必须两步
+    #   · 碎股只支持市价单，限价单必须整股
+    "alpaca": Capabilities(
+        venue="alpaca",
+        supports_client_order_id=True,
+        client_order_id_param="client_order_id",
+        supports_query_by_client_id=True,           # GET /v2/orders:by_client_order_id
+        order_visibility_lag_ms=1500,
+        supports_reduce_only=False,                 # 美股现货没有这个概念
+        supports_ws=False,                          # 本适配器未接交易流
+        funding_interval_hours=0,
+        supports_fractional=True,                   # 仅市价单；标的级属性为准
+        default_rules=SymbolRules(qty_step=Decimal("1"),
+                                  price_tick=Decimal("0.01"),
+                                  min_qty=Decimal("1"),
+                                  min_notional=Decimal("1")),
+        declared_from="alpaca trading api + 纸面实测（B11）",
     ),
 }
 

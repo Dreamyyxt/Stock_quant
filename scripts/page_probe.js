@@ -133,6 +133,7 @@ MockXHR.prototype.send = function (body) {
     else if (url.indexOf('/api/ops/portfolio') === 0) data = fixture.portfolio;
     else if (url.indexOf('/api/ops/schedule') === 0) data = fixture.schedule;
     else if (url.indexOf('/api/ops/ledger') === 0) data = fixture.ledger;
+    else if (url.indexOf('/api/ops/gateway') === 0) data = fixture.gateway;
     if (data === null || data === undefined) {
       self.status = 404;
       self.responseText = '{"error":"not found"}';
@@ -238,6 +239,7 @@ function run(mode) {
     contains('离线: 策略排期明说需要运维服务', grab('scheduleBody'), '需要连接运维服务');
     /* B10：账本同理 —— 离线时绝不能用演示持仓冒充真实持仓。 */
     contains('离线: 账本明说需要运维服务', grab('ledgerBody'), '需要连接运维服务');
+  contains('离线: 网关明说需要运维服务', grab('gatewayBody'), '需要连接运维服务');
     return;
   }
 
@@ -580,6 +582,42 @@ function run(mode) {
     check('账本: 不可用时不挂绿灯',
           registry['ledgerAt'].className.indexOf('p-ok') < 0,
           registry['ledgerAt'].className);
+  }
+
+  /* ---------- B11 · 真实网关 ---------- */
+
+  const gwBody = grab('gatewayBody');
+  const gw = fixture.gateway;
+  if (gw && gw.available !== false) {
+    contains('网关: 端点写进页面', gwBody, 'paper-api.alpaca.markets');
+    if (gw.account && gw.account.account_number) {
+      contains('网关: 账户号只露后四位', gwBody, String(gw.account.account_number));
+      /* 完整号用假号（PA9ZZTEST01），只为验证「露出后四位」这条约束真的生效。
+         真号绝不能进仓库 —— 这条断言本身就是为此存在的。 */
+      check('网关: 页面不出现完整账户号',
+            gwBody.indexOf('PA9ZZTEST01') < 0,
+            '账户号被完整打印了');
+    }
+    if (gw.ok === true && gw.query_by_client_id_ok === true) {
+      contains('网关: 回查端点实测通要写明', gwBody, '实测通');
+      check('网关: 连通时右上角挂绿',
+            registry['gwAt'].className.indexOf('p-ok') >= 0,
+            registry['gwAt'].className);
+    } else {
+      /* 账户读到了但回查坏了 —— 这是最像正常的一种故障，必须红着说。 */
+      contains('网关: 回查不可用要说清不许自动交易', gwBody, '不许承担自动交易');
+      check('网关: 探针没过时不挂绿灯',
+            registry['gwAt'].className.indexOf('p-ok') < 0,
+            registry['gwAt'].className);
+    }
+    if (gw.is_open === false) {
+      contains('网关: 休市要如实显示', gwBody, '休市');
+    }
+  } else {
+    contains('网关: 未接入时明说', gwBody, '未接入');
+    check('网关: 未接入时不挂绿灯',
+          registry['gwAt'].className.indexOf('p-ok') < 0,
+          registry['gwAt'].className);
   }
 }
 

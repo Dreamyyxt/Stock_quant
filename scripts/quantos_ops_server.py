@@ -527,6 +527,104 @@ def _ledger_provider(fault: str):
     return snapshot
 
 
+def _gateway_provider(fault: str):
+    """
+    真实网关（B11）的**只读**快照来源。
+
+    为什么给一个函数而不是 `AlpacaGateway` 对象：看板能看见"连得上、
+    回查端点实测通"，但不能拿到 `place()`。给看板一个能下单的对象，
+    等于把下单按钮画进了一个公网可打开页面。
+
+    探针结果缓存 30 秒：它每次都要打两三个真实 HTTP 请求，
+    而页面每 15 秒刷新一次 —— 不缓存等于用看板去撞券商限流。
+    """
+    from quantos_core.alpaca_gateway import (build_gateway_from_env, DATA_BASE)
+    from quantos_core.gateway import GatewayError
+
+    fault = (fault or "").strip().lower()
+
+    if fault in ("gateway-down", "gateway-noquery", "gateway-demo"):
+        # 故障演示：不碰网络，给出确定的坏样子 / 好样子。
+        if fault == "gateway-demo":
+            return lambda: {
+                "available": True, "mode": "paper", "ok": True, "healthy": True,
+                "endpoint": "https://paper-api.alpaca.markets",
+                "key": "PK2N***", "detail": "纸面账户可用（USD 100000，ACTIVE）",
+                "account": {"account_number": "***ST01", "status": "ACTIVE",
+                            "currency": "USD", "cash": "100000", "equity": "100000",
+                            "buying_power": "400000", "trading_blocked": False},
+                "is_open": True, "next_close": "2026-10-27T16:00:00-04:00",
+                "query_by_client_id_ok": True, "query_latency_ms": 743,
+                "max_order_notional": "1000",
+                "verified_at": "2026-10-27T15:39:10.048043+00:00",
+                "declared_from": "alpaca trading api + 纸面实测（B11）",
+                "notes": ["市场当前开盘", "能力声明已实测"],
+            }
+        bad = fault == "gateway-down"
+        return lambda: {
+            "available": True, "mode": "paper", "ok": False, "healthy": False,
+            "endpoint": "https://paper-api.alpaca.markets", "key": "PK2N***",
+            "detail": ("TransportError: GET /v2/account 超时（15.0s）："
+                       "请求可能已经到达场所 —— 这是「不知道」，不是「失败」"
+                       if bad else "无法按客户端单号回查 —— 拒绝承担自动交易"),
+            "account": {} if bad else {
+                "account_number": "***ST01", "status": "ACTIVE",
+                "currency": "USD", "cash": "100000", "equity": "100000"},
+            "is_open": None if bad else True,
+            "next_close": None if bad else "2026-10-27T16:00:00-04:00",
+            # 两种故障的 query 标志都是 False（回查确实不通），区别在账户：
+            # down 连账户都读不到，noquery 账户读得到 —— 后者才是最难发现的那种。
+            "query_by_client_id_ok": False, "query_latency_ms": 0,
+            "max_order_notional": "1000", "verified_at": None,
+            "notes": ["回查端点坏了，等于超时之后永远救不回来"] if not bad else [],
+        }
+
+    state = {"at": 0.0, "payload": None}
+
+    def snapshot():
+        import time as _t
+        if state["payload"] is not None and _t.time() - state["at"] < 30:
+            return state["payload"]
+        try:
+            gw = build_gateway_from_env(require_market_open=True)
+        except (GatewayError, OSError, ValueError) as exc:
+            payload = {
+                "available": False, "mode": "absent", "ok": False, "healthy": False,
+                "reason": f"网关未接入：{type(exc).__name__}: {exc}",
+                "detail": "", "account": {}, "is_open": None,
+                "query_by_client_id_ok": False, "query_latency_ms": 0,
+                "max_order_notional": "", "notes": [],
+            }
+            state.update(at=_t.time(), payload=payload)
+            return payload
+
+        result = gw.probe("AAPL")
+        caps = gw.capabilities
+        payload = {
+            "available": True,
+            "mode": result.mode,
+            "ok": result.ok,
+            "healthy": bool(result.ok and result.mode == "paper"),
+            "endpoint": gw.credentials.base,
+            "key": gw.credentials.masked_key,
+            "detail": result.detail,
+            "account": dict(result.account),
+            "is_open": result.clock.get("is_open"),
+            "next_close": result.clock.get("next_close"),
+            "query_by_client_id_ok": result.query_by_client_id_ok,
+            "query_latency_ms": result.query_latency_ms,
+            "max_order_notional": str(gw.max_order_notional),
+            "verified_at": caps.verified_at.isoformat() if caps.verified_at else None,
+            "declared_from": caps.declared_from,
+            "data_host": DATA_BASE,
+            "notes": list(result.notes),
+        }
+        state.update(at=_t.time(), payload=payload)
+        return payload
+
+    return snapshot
+
+
 class _DemoBroker:
     """
     演示用券商账单端。
@@ -696,7 +794,8 @@ def _apply_fault(fault: str, metrics: OpsMetrics, registry: StrategyRegistry,
         # 这里不用额外动作 —— 也不该去动真实状态文件。
         pass
 
-    elif fault == "ledger-corrupt" or fault == "ledger-demo":
+    elif fault in ("ledger-corrupt", "ledger-demo", "gateway-down",
+                   "gateway-noquery", "gateway-demo"):
         # 账本坏档 / 演示账本都由 `_ledger_provider(fault)` 在临时副本上造，
         # 同样不动真文件。
         pass
@@ -706,7 +805,8 @@ def _apply_fault(fault: str, metrics: OpsMetrics, registry: StrategyRegistry,
             "未知故障类型：" + fault + "（可选：stale-market / risk-halt / "
             "unknown-order / silent-strategy / eod-mismatch / live-not-armed / "
             "stale-model / unbooked-dividend / sched-in-doubt / "
-            "sched-stale-calendar / ledger-corrupt / ledger-demo）")
+            "sched-stale-calendar / ledger-corrupt / ledger-demo / "
+            "gateway-down / gateway-noquery / gateway-demo）")
 
 
 # --------------------------------------------------------------------------- #
@@ -739,7 +839,8 @@ def main(argv=None) -> int:
                          canary_router=rt["canary_router"],
                          research_inbox=rt["research_inbox"],
                          schedule_provider=_schedule_provider(args.fault),
-                         ledger_provider=_ledger_provider(args.fault))
+                         ledger_provider=_ledger_provider(args.fault),
+                         gateway_provider=_gateway_provider(args.fault))
 
     if args.once and args.eod:
         print(json.dumps(rt["eod_run"].to_dict(), ensure_ascii=False, indent=2,

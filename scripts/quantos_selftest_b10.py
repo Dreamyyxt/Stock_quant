@@ -489,15 +489,29 @@ def part_f() -> None:
     section("F4 进程编排如实报告缺口（网关没接就不许亮绿灯）")
 
     up = os.path.join(ROOT, "scripts", "quantos_up.py")
+    # B11 起"执行网关"是真的探针（Alpaca 纸面）。验收必须能关掉联网，
+    # 否则券商 API 抖一下这个套件就红了，而红的原因跟本批代码无关。
+    env = dict(os.environ, QUANTOS_ALPACA_PROBE="off")
     status = subprocess.run([sys.executable, up, "--status"],
                             capture_output=True, text=True, timeout=120,
-                            cwd=ROOT)
+                            cwd=ROOT, env=env)
     eq(status.returncode, 0, "F4 状态命令正常返回")
     text = status.stdout
     for name in ("风控服务", "执行网关", "调度器(tick)", "运维面"):
         truth(name in text, f"F4 列出 {name}")
-    truth("未接入" in text, "F4 网关明确标注未接入")
-    truth("PaperBroker" in text, "F4 说明当前成交走的是模拟撮合")
+    truth("[探针]" in text, "F4 网关标注为探针型（是库，不是常驻进程）")
+    truth("跳过联网探针" in text, "F4 关掉开关后如实说跳过了，而不是假装没接")
+    truth("PaperBroker" in text, "F4 说明 A 股成交仍走模拟撮合")
+
+    machine = subprocess.run([sys.executable, up, "--status", "--json"],
+                             capture_output=True, text=True, timeout=120,
+                             cwd=ROOT, env=env)
+    eq(machine.returncode, 0, "F4 --json 正常返回")
+    payload = json.loads(machine.stdout)
+    truth(isinstance(payload, list) and len(payload) == 4,
+          "F4 --json 是纯 JSON（可直接喂 jq / json.load）")
+    truth(all("state" in item and "key" in item for item in payload),
+          "  └ 每项都带 key 与 state")
 
     section("F5 crontab 片段给出的是收盘后 + 结算延迟的时间")
 

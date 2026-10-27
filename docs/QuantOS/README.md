@@ -64,15 +64,17 @@
 | 账本落盘与恢复（整份快照 / 幂等索引重建 / 现金与分录交叉核对） | `quantos_core/ledger_store.py` | ✅ B10 |
 | cron 入口（一拍一进程 + 单实例锁 + 退出码分级） | `scripts/quantos_tick.py` | ✅ B10 |
 | 进程编排（四进程状态 / 缺口如实上报 / crontab 片段） | `scripts/quantos_up.py` | ✅ B10 |
+| 真实网关（Alpaca 纸面 / 纯 stdlib REST / 端点白名单 + 错误二分） | `quantos_core/alpaca_gateway.py` | ✅ B11 |
+| 网关联调（probe 只读 / reconcile 对账 / roundtrip 真下单需 --yes） | `scripts/quantos_alpaca.py` | ✅ B11 |
 | 风险模型体检（真实 A 股 / 合成数据双源） | `scripts/quantos_risk_check.py` | ✅ B7 |
 | 策略组合体检（风险/等风险/预算/灰度/AI） | `scripts/quantos_portfolio_check.py` | ✅ B6 |
-| 控制台 | `quantos/index.html` | ✅ B4 实盘就绪 + 归因日报；B7 加风险模型 / 灰度 / AI 收件箱；B9 加策略排期；B10 加账本；已发布在线版（B5 多场所未上屏） |
+| 控制台 | `quantos/index.html` | ✅ B4 实盘就绪 + 归因日报；B7 加风险模型 / 灰度 / AI 收件箱；B9 加策略排期；B10 加账本；B11 加真实网关；已发布在线版（B5 多场所未上屏） |
 | 既有实盘链路 | `main.py` / `core/` / `execution/` / `risk/` | 🟡 单券商单账户，待接契约层 |
 
 跑全部验收：
 
 ```bash
-.venv/bin/python scripts/quantos_verify.py     # 13 套件 / 1479 条断言
+.venv/bin/python scripts/quantos_verify.py     # 14 套件 / 1625 条断言
 .venv/bin/python scripts/quantos_crypto_check.py   # Crypto 接入体检（不联网）
 .venv/bin/python scripts/quantos_risk_check.py --source ashare --tail 400   # 真实 A 股估一次 σ
 .venv/bin/python scripts/quantos_risk_check.py --demo --shrinkage 0.5      # 合成数据看收缩效果
@@ -85,6 +87,9 @@
 .venv/bin/python scripts/quantos_tick.py --dry-run              # cron 入口演练（拿锁 + 判定）
 .venv/bin/python scripts/quantos_up.py --status                  # 四进程各是什么状态
 .venv/bin/python scripts/quantos_up.py --crontab                 # 打印 crontab 片段
+.venv/bin/python scripts/quantos_alpaca.py probe                 # 只读探针：账户/时钟/回查端点
+.venv/bin/python scripts/quantos_alpaca.py reconcile             # 场所持仓与现金 vs 本地账本
+.venv/bin/python scripts/quantos_alpaca.py roundtrip --qty 1 --yes  # 真下单（纸面）：买入→核对→平仓
 ```
 
 单独跑某一套：

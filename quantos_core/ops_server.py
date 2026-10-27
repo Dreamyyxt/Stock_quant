@@ -68,7 +68,7 @@ class OpsService:
                  series=None, live_gate=None,
                  risk_model_store=None, canary_router=None,
                  research_inbox=None, schedule_provider=None,
-                 ledger_provider=None):
+                 ledger_provider=None, gateway_provider=None):
         self.metrics = metrics
         self.registry = registry
         self._prices_provider = prices_provider
@@ -90,6 +90,9 @@ class OpsService:
         self.schedule_provider = schedule_provider
         #: B10 账本（只读）。同样只给快照函数 —— 看板能看见持仓，但不能改账本。
         self.ledger_provider = ledger_provider
+        #: B11 真实网关（只读）。给的是**只读探针的结果函数**，
+        #: 不是 AlpacaGateway 对象 —— 页面绝不能有能力调 place()。
+        self.gateway_provider = gateway_provider
 
     # -- 读 -------------------------------------------------------------- #
 
@@ -220,6 +223,33 @@ class OpsService:
                     "status": "corrupt", "positions": [], "position_count": 0,
                     "cash": {}, "entry_count": 0, "net_deposits_base": "0",
                     "healthy": False}
+        payload.setdefault("as_of", self._clock().isoformat())
+        return payload
+
+    def gateway(self) -> Dict[str, Any]:
+        """
+        真实网关状态（B11）。只读。
+
+        这一格和 `ledger()` 的区别：账本问的是"我们的账对不对"，
+        网关问的是"外面那个世界还在不在"。所以它必须能表达三种失败：
+
+          · 没接入          —— 没有凭据 / 没实现，页面显示"未接入"
+          · 连不上 / 没权限  —— `ok: false` + `reason`
+          · 纸上说支持、实测不支持 —— `query_by_client_id_ok: false`
+
+        最后一种最阴：账户读得到、指标全绿，但超时之后永远查不回那笔单。
+        所以 `healthy` 不只看"连上了没有"，还要求回查端点实测通过。
+        """
+        if self.gateway_provider is None:
+            return {"as_of": self._clock().isoformat(), "available": False,
+                    "reason": "未接入真实网关（成交走 PaperBroker）",
+                    "mode": "absent", "healthy": False}
+        try:
+            payload = dict(self.gateway_provider())
+        except (RuntimeError, OSError, ValueError) as exc:
+            return {"as_of": self._clock().isoformat(), "available": False,
+                    "reason": f"网关探针失败：{type(exc).__name__}: {exc}",
+                    "mode": "error", "healthy": False}
         payload.setdefault("as_of", self._clock().isoformat())
         return payload
 
@@ -380,6 +410,9 @@ class _Handler(BaseHTTPRequestHandler):
 
         if path == "/api/ops/ledger":
             return self._json(HTTPStatus.OK, self.service.ledger())
+
+        if path == "/api/ops/gateway":
+            return self._json(HTTPStatus.OK, self.service.gateway())
 
         return self._json(HTTPStatus.NOT_FOUND,
                           {"ok": False, "error": f"未知路径 {path}"})

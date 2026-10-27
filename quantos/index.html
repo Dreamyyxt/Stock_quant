@@ -877,6 +877,16 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--a
         <div id="ledgerBody"></div>
       </div>
 
+      <!-- ======== 真实网关（B11 · 纸面账户实测） ======== -->
+      <div class="card">
+        <div class="card-t wrap">
+          <h3>真实网关</h3>
+          <span class="hint">Alpaca 纸面 · 真撮合 / 真拒单 / 可按单号回查</span>
+          <div class="right"><span class="pill p-mute" id="gwAt">—</span></div>
+        </div>
+        <div id="gatewayBody"></div>
+      </div>
+
       <div class="card">
         <div class="card-t">
           <h3>订单与执行</h3>
@@ -1005,6 +1015,9 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--a
        同样留 null 表示「看不到」，不表示「今天不用跑」—— 这两件事差别很大。 */
     schedule: null, scheduleReason: '',
     ledger: null, ledgerReason: '',
+    /* B11：真实网关。null 表示"要么没接、要么连不上"，两种都要如实显示 ——
+       最不能出的错是"账户读到了就显示绿灯"，而回查端点其实已经坏了。 */
+    gateway: null, gatewayReason: '',
     overall: 'not_configured', headline: '', rootCauses: [], components: {},
     at: 0, token: '', timer: null, busy: false
   };
@@ -1087,7 +1100,11 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--a
     opts = opts || {};
     if (LIVE.busy) return;
     LIVE.busy = true;
-    var pending = 6, failed = 0, firstErr = '';
+    /* 这里的条数曾经写死成 6，而实际有 8 条请求 —— 后果是 refreshAll 提前
+       触发，最后两条数据到手时页面已经渲染完一轮，且 LIVE.busy 在它们回来
+       之前就被置回 false（下一轮可能叠上来）。改成计数器：发一条加一，
+       落地减一，减到 0 才算这一轮结束。新增请求不用再改这个数字。 */
+    var pending = 0, failed = 0, firstErr = '';
 
     function fin() {
       pending--;
@@ -1104,16 +1121,19 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--a
       if (opts.refresh !== false) refreshAll();
     }
 
+    pending++;
     opsReq('GET', '/api/ops/snapshot', null, function (err, data) {
       if (err) { failed++; firstErr = firstErr || err.message; }
       else applySnap(data);
       fin();
     });
+    pending++;
     opsReq('GET', '/api/ops/strategies', null, function (err, data) {
       if (err) { failed++; firstErr = firstErr || err.message; }
       else LIVE.strategies = (data && data.strategies) || [];
       fin();
     });
+    pending++;
     opsReq('GET', '/api/ops/audit?limit=30', null, function (err, data) {
       if (err) { failed++; firstErr = firstErr || err.message; }
       else {
@@ -1124,6 +1144,7 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--a
     });
     /* 净值序列是补充数据：拿不到不算"运维服务挂了"，只把曲线退回"无数据"状态。
        但它参与 pending，这样 refreshAll 一定在它落地之后才跑。 */
+    pending++;
     opsReq('GET', '/api/ops/nav-history', null, function (err, data) {
       if (err) {
         LIVE.navPoints = [];
@@ -1136,6 +1157,7 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--a
     });
     /* 三级实盘开关同理：它是补充数据，拿不到只说明"这块看不到"，
        不能让它把整页判成离线。失败时置空并记原因，页面照常标"不可实盘"。 */
+    pending++;
     opsReq('GET', '/api/ops/live', null, function (err, data) {
       if (err) {
         LIVE.liveGate = null;
@@ -1151,6 +1173,7 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--a
     });
     /* B7：风险模型 / 灰度 / AI 收件箱。同样是补充数据 —— 拿不到只标「这块看不到」，
        不把整页判成离线，更不编一个「σ 健康」的绿灯。 */
+    pending++;
     opsReq('GET', '/api/ops/portfolio', null, function (err, data) {
       if (err) {
         LIVE.portfolio = null;
@@ -1166,6 +1189,7 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--a
     });
     /* B9：策略排期。也是补充数据 —— 拿不到只让这张卡片说"看不到"，
        绝不用「今天没有到期策略」这种最舒服的假设顶上。 */
+    pending++;
     opsReq('GET', '/api/ops/schedule', null, function (err, data) {
       if (err) {
         LIVE.schedule = null;
@@ -1181,6 +1205,7 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--a
     });
     /* B10：账本。读不出来时必须红着说"读不出来"，不能显示 0 持仓 ——
        0 持仓会被读成"空仓"，而空仓的下一拍会把已有持仓重新买一遍。 */
+    pending++;
     opsReq('GET', '/api/ops/ledger', null, function (err, data) {
       if (err) {
         LIVE.ledger = null;
@@ -1191,6 +1216,20 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--a
       } else {
         LIVE.ledger = data;
         LIVE.ledgerReason = '';
+      }
+      fin();
+    });
+    pending++;
+    opsReq('GET', '/api/ops/gateway', null, function (err, data) {
+      if (err) {
+        LIVE.gateway = null;
+        LIVE.gatewayReason = err.message;
+      } else if (!data || data.available === false) {
+        LIVE.gateway = null;
+        LIVE.gatewayReason = (data && data.reason) || '运维服务未接入真实网关';
+      } else {
+        LIVE.gateway = data;
+        LIVE.gatewayReason = '';
       }
       fin();
     });
@@ -1640,6 +1679,7 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--a
     renderResearch();      /* B7 · T-603 AI 收件箱 */
     renderSchedule();      /* B9 · 交易日历与策略排期 */
     renderLedger();        /* B10 · 账本落盘与恢复 */
+    renderGateway();       /* B11 · Alpaca 纸面网关 */
     renderDrawer();
   }
 
@@ -4168,6 +4208,117 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--a
         atEl.className = 'pill p-bad';
         atEl.textContent = meta.label;
       }
+    }
+  }
+
+  /* ===================== B11 · 真实网关 ===================== */
+  /* 这一格最容易犯的错是"账户读到了就亮绿灯"。账户读得到只说明鉴权通，
+     而超时之后能不能把单子救回来，取决于 orders:by_client_order_id。
+     所以 healthy 同时要求：ok && mode=paper && 回查端点实测通。 */
+  function gatewayMeta(gw) {
+    if (!gw) return { label: '未接入', pill: 'p-mute', tone: 'mute' };
+    if (gw.ok === true && gw.query_by_client_id_ok === true) {
+      return { label: '纸面已连通', pill: 'p-ok', tone: 'ok' };
+    }
+    /* 区分"连不上"和"连上了但回查坏"：后者最像正常 —— 账户金额都在，
+       只有超时那一刻才会发现救不回来。判据用账户快照有没有内容，
+       因为 probe 只有在账户读成功之后才填它。 */
+    var hasAccount = gw.account && Object.keys(gw.account).length > 0;
+    if (hasAccount && gw.query_by_client_id_ok === false) {
+      return { label: '回查不可用', pill: 'p-bad', tone: 'bad' };
+    }
+    return { label: '连不上', pill: 'p-bad', tone: 'bad' };
+  }
+
+  function renderGateway() {
+    var host = document.getElementById('gatewayBody');
+    var atEl = document.getElementById('gwAt');
+    if (!host) return;
+    if (atEl) { atEl.className = 'pill p-mute'; atEl.textContent = '—'; }
+
+    if (!LIVE.on) {
+      host.innerHTML = noteBlockHtml('需要连接运维服务后才能查看网关状态。' +
+        '这里显示的是"外面那个世界还在不在"，页面自己判断不了 —— ' +
+        '编一个绿灯比不显示危险得多。');
+      return;
+    }
+    var gw = LIVE.gateway;
+    if (!gw) {
+      host.innerHTML = noteBlockHtml('真实网关未接入：' +
+        (LIVE.gatewayReason || '/api/ops/gateway 未返回数据') +
+        '。此时成交仍走 PaperBroker —— 它不撮合、不拒单，成交永远成功。');
+      return;
+    }
+
+    var meta = gatewayMeta(gw);
+    var acct = gw.account || {};
+    var html = [];
+
+    html.push('<div class="attr-kv"><span class="k">状态</span>' +
+      '<span class="v"><span class="pill ' + meta.pill + '">' +
+      '<span class="dot"></span>' + esc(meta.label) + '</span> ' +
+      '<span class="num" style="margin-left:6px">' + esc(String(gw.mode || '—')) +
+      '</span></span></div>' +
+      '<div class="attr-kv"><span class="k">端点</span>' +
+      '<span class="v num">' + esc(String(gw.endpoint || '—')) + '</span></div>' +
+      '<div class="attr-kv"><span class="k">账户</span>' +
+      '<span class="v num">' + esc(String(acct.account_number || '—')) + ' · ' +
+      esc(String(acct.status || '—')) + '</span></div>' +
+      '<div class="attr-kv"><span class="k">现金 / 权益</span>' +
+      '<span class="v num">' + (acct.cash === undefined ? '—' : money(acct.cash)) +
+      ' / ' + (acct.equity === undefined ? '—' : money(acct.equity)) +
+      '</span></div>' +
+      '<div class="attr-kv"><span class="k">开市</span>' +
+      '<span class="v num">' + (gw.is_open === true ? '开盘' :
+        (gw.is_open === false ? '休市' : '—')) +
+      (gw.next_close ? ' · 收盘 ' + esc(String(gw.next_close).slice(11, 16)) : '') +
+      '</span></div>' +
+      '<div class="attr-kv"><span class="k">按单号回查</span>' +
+      '<span class="v num">' + (gw.query_by_client_id_ok === true ? '实测通' :
+        (gw.query_by_client_id_ok === false ? '不可用' : '—')) +
+      (gw.query_latency_ms ? ' · ' + esc(String(gw.query_latency_ms)) + 'ms' : '') +
+      '</span></div>' +
+      '<div class="attr-kv"><span class="k">单笔上限</span>' +
+      '<span class="v num">' + (gw.max_order_notional ? '$' +
+        esc(String(gw.max_order_notional)) : '—') + '</span></div>');
+
+    /* 回查端点坏掉必须红：账户明明是好的，绿灯会让人以为一切正常。 */
+    if (gw.ok !== true || gw.query_by_client_id_ok !== true) {
+      html.push('<div class="attr-warn" style="margin-top:10px">' + ICON_WARN_SMALL +
+        '<span>' + esc(String(gw.detail || '网关未通过探针')) +
+        '。<b>这种状态下不许承担自动交易</b> —— 下单超时之后既拿不到 orderId ' +
+        '也查不回单子，那笔单到底存不存在将永远无法确定。</span></div>');
+    }
+    /* 备注分两种，画法必须不一样：探针没过时它们是在解释故障，要用告警样式；
+       探针通过时它们只是说明（"市场当前开盘"），画成黄条会让人以为出了事，
+       久了就没人再读黄条 —— 而真正该被读的告警就埋在这堆黄条里。 */
+    var notes = gw.notes || [];
+    var notesOk = (gw.ok === true && gw.query_by_client_id_ok === true);
+    for (var i = 0; i < notes.length; i++) {
+      if (notesOk) {
+        html.push('<div class="hint" style="margin-top:8px">· ' +
+          esc(String(notes[i])) + '</div>');
+      } else {
+        html.push('<div class="attr-warn" style="margin-top:8px">' + ICON_WARN_SMALL +
+          '<span>' + esc(String(notes[i])) + '</span></div>');
+      }
+    }
+
+    html.push('<div class="cy-list" style="margin-top:10px">' +
+      '<div class="cy-row"><div class="cy-top"><span class="cy-id">这一格证明什么</span></div>' +
+      '<div class="cy-sub">纸面账户有真撮合、真拒单、真回报，只是没有真钱。' +
+      '买卖各一笔走完，成交价与账本现金必须分币不差 —— ' +
+      '这是 PaperBroker 永远给不出的证据。</div></div>' +
+      '<div class="cy-row"><div class="cy-top"><span class="cy-id">这一格不证明什么</span>' +
+      '<span class="pill p-warn">仍未接入</span></div>' +
+      '<div class="cy-sub">A 股 tick 的成交仍走 PaperBroker；真钱端点需要同时满足 ' +
+      '环境开关与参数开关，缺一个就拒绝连接。</div></div>' +
+      '</div>');
+
+    host.innerHTML = html.join('');
+    if (atEl) {
+      atEl.className = 'pill ' + meta.pill;
+      atEl.textContent = esc(gw.mode === 'paper' ? '纸面' : String(gw.mode || '—'));
     }
   }
 

@@ -45,6 +45,11 @@ from pathlib import Path
 from typing import Callable, List, Tuple
 
 ROOT = Path(__file__).resolve().parent.parent
+# 本脚本既被当成命令跑（`python scripts/quantos_up.py`），也要 import
+# `quantos_core`。不加这一行，探针会报 "No module named 'quantos_core'" ——
+# 而那看起来像"网关未接入"，实际是路径没配好。假阴性的典型样子。
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 RUN = ROOT / "state" / "quantos"
 LOGS = ROOT / "logs"
 
@@ -62,7 +67,7 @@ OK, BAD, WARN, GAP = "🟢", "🔴", "🟡", "⚪"
 class Proc:
     key: str
     name: str
-    form: str                       # daemon / cron / absent
+    form: str                       # daemon / cron / probe / absent
     cmd: List[str]
     pidfile: Path
     probe: Callable[[], Tuple[str, str]]
@@ -139,8 +144,51 @@ def probe_scheduler() -> Tuple[str, str]:
 
 
 def probe_gateway() -> Tuple[str, str]:
-    """执行网关：B11 才做。这里不给绿灯，也不起空壳。"""
-    return "absent", "真实券商网关未接入（B11）；当前成交走 PaperBroker"
+    """
+    执行网关（B11）。
+
+    这里**不常驻进程**：网关是库，不是一个要跑的守护进程。所以这一格
+    探的是"凭据和端点现在能不能用"，不是"进程还活着没有"。
+
+    三种结论刻意分开：
+
+      up        探针通过（鉴权通 + 回查端点实测通）
+      degraded  账户读得到，但回查端点不可用 —— 最像正常的一种故障
+      absent    没凭据 / 没实现，成交仍走 PaperBroker
+      down      鉴权失败或连不上
+    """
+    # 验收套件里跑 --status 时必须能关掉联网探针：否则某天券商 API 抖一下，
+    # 验收就红了，而红的原因跟代码毫无关系。运维手工跑时不用管这个开关。
+    if os.getenv("QUANTOS_ALPACA_PROBE", "").strip().lower() in ("off", "0", "no"):
+        return "absent", "已跳过联网探针（QUANTOS_ALPACA_PROBE=off）"
+
+    try:
+        from quantos_core.alpaca_gateway import build_gateway_from_env
+        from quantos_core.gateway import GatewayError
+    except ImportError as exc:                                  # noqa: BLE001
+        return "absent", f"网关模块不可用：{exc}"
+
+    try:
+        gw = build_gateway_from_env(require_market_open=True)
+    except GatewayError as exc:
+        return "absent", f"未接入：{exc}"
+    except (OSError, ValueError) as exc:
+        return "down", f"{type(exc).__name__}: {exc}"
+
+    try:
+        result = gw.probe("AAPL")
+    except GatewayError as exc:
+        return "down", f"探针失败：{type(exc).__name__}: {exc}"
+
+    if result.ok and result.query_by_client_id_ok:
+        return "up", (f"Alpaca {result.mode} 已连通：{result.detail}；"
+                      f"回查 {result.query_latency_ms}ms；"
+                      f"{'开盘' if result.clock.get('is_open') else '休市'}；"
+                      f"单笔上限 {gw.max_order_notional} USD")
+    if not result.query_by_client_id_ok:
+        return "degraded", ("账户读得到，但按客户端单号回查不可用 —— "
+                            "超时之后救不回来，拒绝承担自动交易")
+    return "down", result.detail
 
 
 PROCS: List[Proc] = [
@@ -148,7 +196,7 @@ PROCS: List[Proc] = [
          [PY, "-m", "quantos_core.risk_service", "--socket", str(RISK_SOCK),
           "--state", str(RISK_STATE)],
          RUN / "risk-service.pid", probe_risk),
-    Proc("gateway", "执行网关", "absent",
+    Proc("gateway", "执行网关", "probe",
          [], RUN / "gateway.pid", probe_gateway),
     Proc("scheduler", "调度器(tick)", "cron",
          [PY, str(ROOT / "scripts" / "quantos_tick.py")],
@@ -173,30 +221,41 @@ def cmd_status(args) -> int:
         state, detail = proc.probe()
         rows.append((proc, state, detail))
 
+    live = sum(1 for _p, s, _d in rows if s in ("up", "cron"))
+    gaps = [_p.name for _p, s, _d in rows if s == "absent"]
+    bad = sum(1 for _p, s, _d in rows if s in ("down", "attention", "wrong"))
+
+    # `--json` 必须只输出 JSON。之前是"先打人类可读的几行，再打 JSON"，
+    # 结果任何 `| jq` 或 `json.load` 都会炸 —— 那种"看起来支持机读"的
+    # 输出比不支持更浪费别人时间。
+    if args.json:
+        print(json.dumps(
+            [{"key": p.key, "name": p.name, "form": p.form,
+              "state": s, "detail": d} for p, s, d in rows],
+            ensure_ascii=False, indent=1))
+        return 1 if (args.strict and (bad or gaps)) else 0
+
     width = max(len(p.name) for p in PROCS)
     for proc, state, detail in rows:
-        form = {"daemon": "常驻", "cron": "cron", "absent": "未接入"}[proc.form]
+        form = {"daemon": "常驻", "cron": "cron", "probe": "探针",
+                "absent": "未接入"}.get(proc.form, proc.form)
         print(f"{_MARK.get(state, '?')} {proc.name.ljust(width)}  "
               f"[{form}]  {detail}")
 
-    live = sum(1 for _p, s, _d in rows if s in ("up", "cron"))
-    gaps = sum(1 for _p, s, _d in rows if s == "absent")
-    bad = sum(1 for _p, s, _d in rows if s in ("down", "attention", "wrong"))
     print(f"\n真实在跑 {live} / {len(rows)}" +
-          (f"；未接入 {gaps} 个" if gaps else "") +
+          (f"；未接入 {len(gaps)} 个" if gaps else "") +
           (f"；异常 {bad} 个" if bad else ""))
 
     print("\n说明：")
     print("  · 调度器是 cron 驱动的一拍一进程，不是常驻；「活着」的证据是上次运行时间。")
     print("  · tick 目前仍用**进程内**风控引擎（EngineRiskClient），独立风控服务")
     print("    还没有接进下单链路 —— 这一格是绿灯只代表服务本身健康。")
+    print("  · 执行网关是**库**不是进程：这一格探的是凭据与端点可用性，"
+          "探针通过不代表 tick 在用它。")
+    print("  · A 股 tick 的成交仍来自 PaperBroker（不撮合、不拒单）；"
+          "Alpaca 纸面账户只用于验证网关这一层，未接进 A 股链路。")
     if gaps:
-        print("  · 执行网关未接入：所有成交来自 PaperBroker，不是真实交易所。")
-    if args.json:
-        print("\n" + json.dumps(
-            [{"key": p.key, "name": p.name, "form": p.form,
-              "state": s, "detail": d} for p, s, d in rows],
-            ensure_ascii=False, indent=1))
+        print(f"  · 没接入：{', '.join(gaps)}")
 
     if args.strict and (bad or gaps):
         return 1
