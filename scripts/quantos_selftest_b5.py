@@ -642,8 +642,15 @@ def part_d() -> None:
     # --- 全量准入清单 --- #
     admissions = all_admissions(max_order_notional=D("5000"))
     truth(len(admissions) >= 5, "全量准入清单覆盖所有声明场所")
-    truth(all(a.allowed for a in admissions),
-          "  └ 声明场所全部通过结构准入（其余风险靠 probe 覆盖）")
+    # `xshg` 是 B12 为 A 股回测新增的场所（整手/涨跌停/最小金额的规则矩阵）。
+    # 它声明了 `supports_query_by_client_id=False`，所以**结构准入必须拒**它：
+    # 超时那一刻既没有 orderId 也查不回，订单状态永远无法确定。
+    # 这不是配置遗漏 —— 它现在真的只能进回测，不能进实盘；等券商接口具备
+    # 回查能力、把这条声明改成 True 并跑过 probe 之后再说。
+    blocked = sorted(a.venue for a in admissions if not a.allowed)
+    eq(blocked, ["xshg"], "只有 xshg 被拦（无法按客户端订单号回查 → 状态不可确定）")
+    truth(all(a.allowed for a in admissions if a.venue != "xshg"),
+          "  └ 其余声明场所全部通过结构准入（其余风险靠 probe 覆盖）")
 
     # --- 资金费周期：现货 0，永续 8 --- #
     eq(profile("binance").funding_interval_hours, 0, "现货资金费周期为 0（无资金费）")

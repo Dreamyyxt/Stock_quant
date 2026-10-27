@@ -440,6 +440,27 @@ VENUE_PROFILES: Dict[str, Capabilities] = {
                                   min_notional=Decimal("1")),
         declared_from="alpaca trading api + 纸面实测（B11）",
     ),
+    # A 股场内（上交所 + 深交所统一按这个口径）。B12 回测用的就是这份声明 ——
+    # 让"整手、最小金额"来自能力矩阵而不是回测脚本里的几个常量，
+    # 否则回测和实盘会各按各的规则取整。
+    "xshg": Capabilities(
+        venue="xshg",
+        supports_client_order_id=True,
+        client_order_id_param="client_order_id",
+        # 交易所本身没有"按客户端单号查"的公开接口，只有券商柜台有。
+        supports_query_by_client_id=False,
+        order_visibility_lag_ms=0,                  # 回测直接成交，没有回报延迟
+        supports_reduce_only=False,                 # A 股是现货，没有这个概念
+        supports_ws=False,
+        funding_interval_hours=0,
+        supports_fractional=False,                  # 100 股整手（688 为 200）
+        default_rules=SymbolRules(qty_step=Decimal("100"),
+                                  price_tick=Decimal("0.01"),
+                                  min_qty=Decimal("100"),
+                                  # 与 research/ashare_ew20 手工回测同口径（2000 元）。
+                                  min_notional=Decimal("2000")),
+        declared_from="上交所/深交所交易规则（100 股整手、科创板 200 股）+ ew20 手工回测口径",
+    ),
 }
 
 

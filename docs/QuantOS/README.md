@@ -66,6 +66,9 @@
 | 进程编排（四进程状态 / 缺口如实上报 / crontab 片段） | `scripts/quantos_up.py` | ✅ B10 |
 | 真实网关（Alpaca 纸面 / 纯 stdlib REST / 端点白名单 + 错误二分） | `quantos_core/alpaca_gateway.py` | ✅ B11 |
 | 网关联调（probe 只读 / reconcile 对账 / roundtrip 真下单需 --yes） | `scripts/quantos_alpaca.py` | ✅ B11 |
+| 指标层（NAV → 年化/波动/夏普/索提诺/回撤/分年度，口径全部声明） | `quantos_core/performance.py` | ✅ B12 |
+| 回测引擎（面板 / 撮合 / 事件驱动；不记账，只生产事件） | `quantos_core/backtest.py` | ✅ B12 |
+| 回测命令（run 跑 / check 查恒等式 / compare 与手工基线对账） | `scripts/quantos_backtest.py` | ✅ B12 |
 | 风险模型体检（真实 A 股 / 合成数据双源） | `scripts/quantos_risk_check.py` | ✅ B7 |
 | 策略组合体检（风险/等风险/预算/灰度/AI） | `scripts/quantos_portfolio_check.py` | ✅ B6 |
 | 控制台 | `quantos/index.html` | ✅ B4 实盘就绪 + 归因日报；B7 加风险模型 / 灰度 / AI 收件箱；B9 加策略排期；B10 加账本；B11 加真实网关；已发布在线版（B5 多场所未上屏） |
@@ -74,7 +77,7 @@
 跑全部验收：
 
 ```bash
-.venv/bin/python scripts/quantos_verify.py     # 14 套件 / 1625 条断言
+.venv/bin/python scripts/quantos_verify.py     # 15 套件 / 1788 条断言
 .venv/bin/python scripts/quantos_crypto_check.py   # Crypto 接入体检（不联网）
 .venv/bin/python scripts/quantos_risk_check.py --source ashare --tail 400   # 真实 A 股估一次 σ
 .venv/bin/python scripts/quantos_risk_check.py --demo --shrinkage 0.5      # 合成数据看收缩效果
@@ -90,6 +93,10 @@
 .venv/bin/python scripts/quantos_alpaca.py probe                 # 只读探针：账户/时钟/回查端点
 .venv/bin/python scripts/quantos_alpaca.py reconcile             # 场所持仓与现金 vs 本地账本
 .venv/bin/python scripts/quantos_alpaca.py roundtrip --qty 1 --yes  # 真下单（纸面）：买入→核对→平仓
+.venv/bin/python scripts/quantos_backtest.py run --start 2019-01-18          # 全池回测（约 70s）
+.venv/bin/python scripts/quantos_backtest.py run --names 200 --start 2019-01-18  # 200 只子集，调参用
+.venv/bin/python scripts/quantos_backtest.py check --names 200 --start 2019-01-18  # 恒等式体检（独立重算）
+.venv/bin/python scripts/quantos_backtest.py compare --start 2019-01-18       # 与 research/ashare_ew20 对账
 ```
 
 单独跑某一套：
@@ -99,13 +106,17 @@
 .venv/bin/python scripts/quantos_selftest_b1.py     # B1 数据层与回放   93 条
 .venv/bin/python scripts/quantos_selftest_b2.py     # B2 风控与幂等     73 条
 .venv/bin/python scripts/quantos_fault_inject.py    # T-205 故障注入  7 场景 55 条
-.venv/bin/python scripts/quantos_selftest_b3.py     # B3 运维中心      103 条
+.venv/bin/python scripts/quantos_selftest_b3.py     # B3 运维中心      106 条
 .venv/bin/python scripts/quantos_ops_check.py       # T-302 抽检        6 项
 .venv/bin/python scripts/quantos_selftest_b4.py     # B4 实盘就绪       96 条
-.venv/bin/python scripts/quantos_selftest_b5.py     # B5 多场所        208 条
+.venv/bin/python scripts/quantos_selftest_b5.py     # B5 多场所        209 条
 .venv/bin/python scripts/quantos_selftest_b6.py     # B6 多策略与 AI   174 条
 .venv/bin/python scripts/quantos_selftest_b7.py     # B7 估计层+公司行动 212 条
 .venv/bin/python scripts/quantos_selftest_b8.py     # B8 策略运行时      142 条
+.venv/bin/python scripts/quantos_selftest_b9.py     # B9 排期            145 条
+.venv/bin/python scripts/quantos_selftest_b10.py    # B10 账本落盘       126 条
+.venv/bin/python scripts/quantos_selftest_b11.py    # B11 真实网关       142 条
+.venv/bin/python scripts/quantos_selftest_b12.py    # B12 回测引擎       161 条
 .venv/bin/python scripts/quantos_ops_check.py --json # 同上，给 CI 用
 ```
 
@@ -149,12 +160,16 @@ curl -s http://127.0.0.1:8787/api/ops/portfolio    # 风险模型 / 灰度 / AI 
 | **B0** | 契约与账本骨架 | ✅ 完成 2026-10-26 | T-001~T-005 交付，48 条断言 |
 | **B1** | 数据层与事件回放 | ✅ 完成 2026-10-26 | T-101~T-105 交付，93 条断言 |
 | **B2** | 风控独立化 + 幂等执行 | ✅ 完成 2026-10-26 | T-201~T-205 交付，73 条 + 7 个故障场景 |
-| B3 | 运维中心后端 | ✅ 完成 2026-10-26 | T-301~T-303 交付，103 条 + 抽检 6 项一致 + 解掉整标的阻断 |
+| B3 | 运维中心后端 | ✅ 完成 2026-10-26 | T-301~T-303 交付，106 条 + 抽检 6 项一致 + 解掉整标的阻断 |
 | B4 | 小规模实盘 + 日终对账 | ✅ 代码完成 2026-10-26 | T-401~T-403 交付，96 条；T-404 两周观察期需真钱真时间 |
-| B5 | Crypto 接入 | ✅ 代码完成 2026-10-26 | T-501a/b~T-504 交付，208 条；真实交易所联调待凭据与 `probe()` |
+| B5 | Crypto 接入 | ✅ 代码完成 2026-10-26 | T-501a/b~T-504 交付，209 条；真实交易所联调待凭据与 `probe()` |
 | B6 | 多策略与 AI 研究 | ✅ 代码完成 2026-10-27 | T-601~T-603 交付，174 条；风险预算/灰度回滚/AI 隔离 |
 | B7 | 估计层与公司行动 | ✅ 代码完成 2026-10-27 | T-701~T-703 交付，212 条；协方差估计/分红拆股对账/三块上屏 |
 | B8 | 策略运行时与导入契约 | ✅ 代码完成 2026-10-27 | T-801~T-803 交付，142 条；策略接口/包导入/全链路运行时 |
+| B9 | 交易日历与策略排期 | ✅ 代码完成 2026-10-27 | T-901~T-904 交付，145 条；数据驱动日历/锚点固定到期/claim 三段/上屏 |
+| B10 | 账本落盘与进程编排 | ✅ 代码完成 2026-10-27 | T-1001~T-1004 交付，126 条；快照落盘与恢复/幂等索引重建/cron 一拍一进程 |
+| B11 | 真实网关（Alpaca 纸面） | ✅ 代码完成 2026-10-27 | T-1101~T-1105 交付，142 条；端点双开关/错误二分/幂等/撤单两步/网关卡片 |
+| B12 | 回测引擎 | ✅ 代码完成 2026-10-27 | T-1201~T-1206 交付，161 条；面板/撮合/驱动的无未来函数保证 + 指标口径 + 与手工基线对账 |
 
 ### B0 交付明细
 

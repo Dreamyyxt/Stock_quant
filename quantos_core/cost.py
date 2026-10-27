@@ -40,24 +40,32 @@ class VenueCostSchedule:
 
     taker_fee_bps: Decimal = Decimal("5")
     maker_fee_bps: Decimal = Decimal("2")
-    #: 单笔最低费用（股票常见 $1，Crypto 常为 0）。
+    #: 单笔最低费用（股票常见 $1，Crypto 常为 0）。**只约束佣金，不约束税费**。
     min_fee: Decimal = Decimal(0)
     #: 基础滑点：正常流动性下买卖价差 + 冲击的保守估计。
     slippage_bps: Decimal = Decimal("8")
     #: 冲击成本增量：订单名义占 NAV 每 1% 额外增加的 bps。
     #: 订单越大，市场越不愿意按当前价成交，必须体现出来。
     impact_bps_per_pct_nav: Decimal = Decimal("0.5")
+    #: 卖方单边税（A 股印花税 5bps）。这是**方向性**成本，买卖不对称，
+    #: 所以不能揉进 `taker_fee_bps` —— 揉进去等于给买方也收一遍印花税。
+    sell_tax_bps: Decimal = Decimal(0)
+    #: 双边过户费（A 股 0.1bps）。金额极小但方向敏感，漏掉会让
+    #: "回测比实盘便宜一点点"，而那一点点乘以笔数就是可以看得见的偏差。
+    transfer_bps: Decimal = Decimal(0)
 
     def __post_init__(self):
         for name in ("taker_fee_bps", "maker_fee_bps", "min_fee",
-                     "slippage_bps", "impact_bps_per_pct_nav"):
+                     "slippage_bps", "impact_bps_per_pct_nav",
+                     "sell_tax_bps", "transfer_bps"):
             if D(getattr(self, name)) < 0:
                 raise ValueError(f"cost.{name} 不能为负")
 
     def to_dict(self) -> Dict[str, str]:
         return {k: str(getattr(self, k)) for k in (
             "taker_fee_bps", "maker_fee_bps", "min_fee",
-            "slippage_bps", "impact_bps_per_pct_nav")}
+            "slippage_bps", "impact_bps_per_pct_nav",
+            "sell_tax_bps", "transfer_bps")}
 
     @staticmethod
     def from_dict(raw: Mapping[str, Any], *, base: Optional["VenueCostSchedule"] = None
@@ -67,14 +75,23 @@ class VenueCostSchedule:
         ref = base or VenueCostSchedule()
         kwargs = {}
         for key in ("taker_fee_bps", "maker_fee_bps", "min_fee",
-                    "slippage_bps", "impact_bps_per_pct_nav"):
+                    "slippage_bps", "impact_bps_per_pct_nav",
+                    "sell_tax_bps", "transfer_bps"):
             kwargs[key] = D(raw[key]) if key in raw else getattr(ref, key)
         return VenueCostSchedule(**kwargs)
 
 
 @dataclass(frozen=True)
 class CostEstimate:
-    """一次下单的成本预估。费用与滑点必须分开，否则归因无法拆开（R-D03）。"""
+    """
+    一次下单的成本预估。费用与滑点必须分开，否则归因无法拆开（R-D03）。
+
+    费用内部再分三层，因为它们的**方向和下限不同**：
+      `fee`      佣金 —— 有最低收费（A 股 5 元），双边收
+      `tax`      卖方税 + 过户费 —— 无最低收费，且只有卖出才收
+      `slippage` 滑点 —— 不是现金流，是成交价差造成的损失
+    账本的 FEE 分录吃的是 `total_fee`（佣金 + 税），滑点走 `slippage` 归因。
+    """
 
     venue: str
     side: str
@@ -86,23 +103,34 @@ class CostEstimate:
     reference_price: Decimal
     expected_price: Decimal
     model_version: str
+    #: 卖方税 + 过户费。买方通常为 0（A 股印花税只在卖出收）。
+    tax: Decimal = Decimal(0)
+    tax_bps: Decimal = Decimal(0)
+
+    @property
+    def total_fee(self) -> Decimal:
+        """佣金 + 税费。这个才是要打进 `Fill.fee` 的数字。"""
+        return q(D(self.fee) + D(self.tax), 8)
 
     @property
     def total(self) -> Decimal:
-        return q(D(self.fee) + D(self.slippage_cost), 8)
+        return q(self.total_fee + D(self.slippage_cost), 8)
 
     @property
     def total_bps(self) -> Decimal:
-        return q(D(self.fee_bps) + D(self.slippage_bps), 4)
+        return q(D(self.fee_bps) + D(self.tax_bps) + D(self.slippage_bps), 4)
 
     def to_dict(self) -> Dict[str, str]:
         return {
             "venue": self.venue, "side": self.side,
             "notional": str(q(self.notional, 2)),
             "fee": str(q(self.fee, 8)),
+            "tax": str(q(self.tax, 8)),
+            "total_fee": str(self.total_fee),
             "slippage_cost": str(q(self.slippage_cost, 8)),
             "total": str(self.total),
-            "fee_bps": str(self.fee_bps), "slippage_bps": str(self.slippage_bps),
+            "fee_bps": str(self.fee_bps), "tax_bps": str(self.tax_bps),
+            "slippage_bps": str(self.slippage_bps),
             "expected_price": str(self.expected_price),
             "model_version": self.model_version,
         }
@@ -188,6 +216,7 @@ class CostModel:
         if qty <= 0 or px <= 0:
             raise ValueError(f"estimate 需要正的 quantity/price，收到 {qty}/{px}")
         notional = q(qty * px, 8)
+        side_u = getattr(side, "value", str(side)).upper()
 
         fee_bps = D(sched.taker_fee_bps if liquidity.upper() == "TAKER"
                     else sched.maker_fee_bps)
@@ -195,13 +224,18 @@ class CostModel:
         if fee < D(sched.min_fee):
             fee = q(D(sched.min_fee), 8)
 
+        # 税费是方向性的：印花税只对卖方收，过户费双边收。
+        tax_bps = D(sched.transfer_bps)
+        if side_u == "SELL":
+            tax_bps += D(sched.sell_tax_bps)
+        tax = q(notional * tax_bps / BPS, 8)
+
         slip_bps = D(sched.slippage_bps)
         if nav is not None and D(nav) > 0:
             pct_nav = notional / D(nav) * Decimal(100)
             slip_bps += D(sched.impact_bps_per_pct_nav) * pct_nav
         slippage_cost = q(notional * slip_bps / BPS, 8)
 
-        side_u = getattr(side, "value", str(side)).upper()
         drift = slip_bps / BPS
         expected = q(px * (Decimal(1) + drift) if side_u == "BUY"
                      else px * (Decimal(1) - drift), 10)
@@ -211,6 +245,7 @@ class CostModel:
             slippage_cost=slippage_cost, fee_bps=q(fee_bps, 4),
             slippage_bps=q(slip_bps, 4), reference_price=px,
             expected_price=expected, model_version=self.version,
+            tax=tax, tax_bps=q(tax_bps, 4),
         )
 
     def expected_fill_price(self, venue: str, side, price: Decimal,

@@ -62,8 +62,8 @@ SymbolKey = Tuple[str, str]
 #: 会被回放器消费的事件类型。未知类型一律忽略（前向兼容，但会计数）。
 KNOWN_EVENTS = frozenset({
     "deposit", "withdraw", "market_snapshot", "strategy_intent", "cycle",
-    "order_ack", "order_timeout", "venue_status", "fill", "permission",
-    "strategy_state",
+    "order_ack", "order_timeout", "order_cancel", "venue_status", "fill",
+    "permission", "strategy_state",
 })
 
 
@@ -141,6 +141,39 @@ class ReplayResult:
 
 
 # --------------------------------------------------------------------------- #
+#  成交归属换算
+# --------------------------------------------------------------------------- #
+
+def _rescale_attribution(attribution: Optional[Mapping[str, Decimal]],
+                         filled: Decimal, ordered: Decimal
+                         ) -> Dict[str, Decimal]:
+    """
+    把「按下单量算好的策略归属」换算成「按这次成交量算的归属」。
+
+    为什么必须有这一步：归属是在下单那一刻按整单量切好的，而真实成交
+    经常不是整单（缩量、整手取整、零股残量、部分成交）。直接把整单归属
+    记到一笔小成交上，`attr_qty` 就会比真实持仓还多 —— 之后每轮净额算出的
+    卖单都比持仓大一点，风控判它"穿过零轴开空单"拒掉，组合就只进不出。
+
+    尾差补到最大的一笔上，保证 `sum(结果) == filled` 严格成立：否则每次
+    成交都会漏下一点零头，几千笔之后策略归属和真实持仓对不上账。
+    """
+    if not attribution:
+        return {}
+    ordered = D(ordered)
+    filled = D(filled)
+    if ordered <= 0:
+        return {sid: D(0) for sid in attribution}
+    ratio = filled / ordered
+    out = {sid: q(D(v) * ratio, 8) for sid, v in attribution.items()}
+    resid = filled - sum(out.values(), D(0))
+    if resid != 0:
+        big = max(out, key=lambda s: (abs(out[s]), s))
+        out[big] = q(out[big] + resid, 8)
+    return out
+
+
+# --------------------------------------------------------------------------- #
 #  回放器
 # --------------------------------------------------------------------------- #
 
@@ -176,22 +209,40 @@ class Replayer:
         self._cid_seq = 0
         self._fills = 0
         self._cycles = 0
+        self._events = 0
         self._blocked: List[Dict[str, str]] = []
         self._unknown_events: List[str] = []
         self._orphan_fills: List[str] = []
         self._policies = {p.strategy_id: p for p in self.config.strategy_policies}
 
     # ------------------------------------------------------------------ #
-    #  主循环
+    #  增量接口（B12）：让回测能一根 bar 一根 bar 地推进同一个回放器
     # ------------------------------------------------------------------ #
+    #
+    #  为什么需要这个而不是"回测自己写一套循环"
+    #  ------------------------------------
+    #  回测最怕的东西是「回测的账和实盘的账是两份代码」。一旦分成两份，
+    #  两边对不上时没人能判断是策略问题还是记账问题。
+    #  有了 apply()，回测就只是**事件的生产者**：它负责把历史 bar 翻译成
+    #  market_snapshot / cycle / fill 这些事件，账务、风控、净额全部还是
+    #  这套回放器在做 —— 和实盘回放时走的是同一条路。
 
-    def run(self, store: EventStore, upto_seq: Optional[int] = None) -> ReplayResult:
-        self._reset()
-        events = 0
-        for env in store.read(1, upto_seq):
-            events += 1
-            self._dispatch(env)
+    def apply(self, env: EventEnvelope) -> None:
+        """喂一个事件。调用方保证 seq 递增（回放器不校验，因为它不该管编号）。"""
+        self._events += 1
+        self._dispatch(env)
 
+    def pending_orders(self) -> List[Order]:
+        """
+        还没走到终态的订单（SUBMITTED / ACCEPTED / PARTIAL 等），按提交顺序。
+
+        回测用它决定"明天开盘要撮合哪些单"。**只读**：不改状态，
+        所以调用方可以放心地在撮合前先看一眼。
+        """
+        return [o for o in self._orders.values() if not o.is_terminal]
+
+    def snapshot(self) -> ReplayResult:
+        """当前状态的结果快照。`run()` 结束时也走这里，保证两条路产物一致。"""
         result = ReplayResult(
             config=self.config, ledger=self.ledger, risk_state=self.risk_state,
             targets=list(self._targets), decisions=list(self._decisions),
@@ -201,10 +252,20 @@ class Replayer:
             blocked_cycles=list(self._blocked),
             unknown_events=sorted(set(self._unknown_events)),
             orphan_fills=list(self._orphan_fills),
-            events_read=events,
+            events_read=self._events,
         )
         result.digest = self._digest(result)
         return result
+
+    # ------------------------------------------------------------------ #
+    #  主循环
+    # ------------------------------------------------------------------ #
+
+    def run(self, store: EventStore, upto_seq: Optional[int] = None) -> ReplayResult:
+        self._reset()
+        for env in store.read(1, upto_seq):
+            self.apply(env)
+        return self.snapshot()
 
     def _dispatch(self, env: EventEnvelope) -> None:
         handler = {
@@ -215,6 +276,7 @@ class Replayer:
             "cycle": self._on_cycle,
             "order_ack": self._on_ack,
             "order_timeout": self._on_timeout,
+            "order_cancel": self._on_cancel,
             "venue_status": self._on_venue_status,
             "fill": self._on_fill,
             "permission": self._on_permission,
@@ -387,6 +449,24 @@ class Replayer:
             # 超时 = 状态未知，冻结标的；绝不重提（R-A08）。
             self.risk_state.symbols_with_unknown_orders.add(order.symbol)
 
+    def _on_cancel(self, env: EventEnvelope) -> None:
+        """
+        主动撤单（B12 回测需要，实盘撤单走同一条路）。
+
+        为什么不能复用 `venue_status`：`resolve_unknown_order` 是给「状态未知」
+        设计的状态消解器，它看到 `filled_qty > 0` 就一定会落到 PARTIALLY_FILLED。
+        而"部分成交后撤掉残量"恰恰是它表达不了的结论 —— 那种单子会永远挂在
+        在途里，把该标的的额度一直占着。撤单是一件独立的事实，就该有独立的事件。
+        """
+        order = self._order(env.payload.get("client_order_id"))
+        if order is None:
+            return
+        try:
+            order.transition(OrderState.CANCELLED, "cancel", at=env.as_of)
+        except Exception:                                  # noqa: BLE001
+            return
+        self._refresh_inflight()
+
     def _on_venue_status(self, env: EventEnvelope) -> None:
         p = env.payload
         order = self._order(p.get("client_order_id"))
@@ -447,7 +527,16 @@ class Replayer:
             account_id=order.account_id, side=order.side,
             quote_ccy=str(p.get("quote_ccy", self.config.base_currency)),
             decision_price=order.ref_price,
-            attribution=intent.attribution, ts=fill.ts)
+            # 归属必须按**成交量**换算，不是按下单量。
+            #
+            # `intent.attribution` 是下单那一刻按整单量算好的。部分成交
+            # （缩量、整手取整、零股残量）时直接把它传下去，等于让策略凭空
+            # 多出股份：`attr_qty` 会超过真实持仓，于是"策略敞口"虚高，
+            # 下一次 netting 算出的卖单比持仓还大 1% —— 风控判它"穿过零轴
+            # 开空单"直接拒掉，组合只进不出，而报告上只表现为"换手不高"。
+            attribution=_rescale_attribution(intent.attribution,
+                                             D(fill.quantity), D(intent.quantity)),
+            ts=fill.ts)
         if posted:
             self._fills += 1
             notional = D(fill.quantity) * D(fill.price)

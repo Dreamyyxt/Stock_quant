@@ -33,6 +33,7 @@ SUITES = [
     ("B9 交易日历与策略排期（锚点/幂等/时间口径）", "quantos_selftest_b9.py"),
     ("B10 账本落盘与进程编排（恢复/幂等/cron）", "quantos_selftest_b10.py"),
     ("B11 真实网关（纸面连通/幂等/撤单两步/上屏）", "quantos_selftest_b11.py"),
+    ("B12 回测引擎（面板/撮合/无未来函数/指标）", "quantos_selftest_b12.py"),
 ]
 
 

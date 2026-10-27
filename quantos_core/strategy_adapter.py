@@ -114,7 +114,11 @@ def adapt_signals(signals: Sequence[Any], config: AdapterConfig,
         if weight < 0 and not config.allow_short:
             dropped.append(f"{symbol}:short_disabled")
             continue
-        if abs(weight) < D(config.min_abs_weight):
+        # 显式写 0 是**平仓指令**，不是"没有意见"。这两件事必须分开：
+        # 前者要求把已有持仓卖光，后者要求什么都别做。混在一起的结果是
+        # 策略一旦买进就永远卖不掉 —— 组合只会加仓，永远不会退出一个标的。
+        # 微小但非零的权重仍然丢弃（那是碎意图，不是指令）。
+        if weight != 0 and abs(weight) < D(config.min_abs_weight):
             dropped.append(f"{symbol}:below_min_weight")
             continue
 
@@ -130,11 +134,12 @@ def adapt_signals(signals: Sequence[Any], config: AdapterConfig,
 
     for symbol in sorted(per_symbol):
         weight = _clamp(per_symbol[symbol], Decimal(-1), Decimal(1))
-        if weight == 0:
-            dropped.append(f"{symbol}:net_weight_zero")
-            continue
+        # `weight == 0` 不再被丢弃：它是"目标权重清零"的显式指令。
+        # 幂等的关键在于——净额层看到 target=0、current=有持仓，就会算出
+        # 一笔卖出；而没有持仓时 delta 也是 0，自然 NOOP，不会产生碎单。
 
         reason_code = "+".join(sorted(set(reasons.get(symbol, ["unspecified"]))))
+        # 0 权重归到 EXIT_LONG：它的语义就是"退出多头"，与负数在只做多模式下等价。
         kind = SignalKind.ENTER_LONG if weight > 0 else SignalKind.EXIT_LONG
 
         sig = Signal.build(
