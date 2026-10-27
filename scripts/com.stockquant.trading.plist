@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Unique label for this service -->
+    <key>Label</key>
+    <string>com.stockquant.trading</string>
+
+    <!-- Command to run -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/dreamyyxt/Projects/Stock_quant/scripts/start_trading.sh</string>
+        <string>live</string>
+    </array>
+
+    <!-- Working directory -->
+    <key>WorkingDirectory</key>
+    <string>/Users/dreamyyxt/Projects/Stock_quant</string>
+
+    <!-- Log stdout / stderr -->
+    <key>StandardOutPath</key>
+    <string>/Users/dreamyyxt/Projects/Stock_quant/logs/launchd_stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/dreamyyxt/Projects/Stock_quant/logs/launchd_stderr.log</string>
+
+    <!-- Start at login (not at boot — requires user session) -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Auto-restart if process crashes -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Wait 30s before restarting after a crash -->
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <!-- Environment: ensure correct locale and timezone -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+        <key>TZ</key>
+        <string>America/New_York</string>
+        <key>HOME</key>
+        <string>/Users/dreamyyxt</string>
+        <key>PATH</key>
+        <string>/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin</string>
+    </dict>
+</dict>
+</plist>

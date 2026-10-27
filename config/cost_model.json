@@ -1,0 +1,41 @@
+{
+  "version": "2026-10-v1",
+  "_comment": "QuantOS 成本模型唯一参数文件。回测撮合与实盘费用预估都必须读这一份（T-105）。单位为 bps：1bp = 0.01%。",
+  "base": {
+    "taker_fee_bps": "5",
+    "maker_fee_bps": "2",
+    "min_fee": "1",
+    "slippage_bps": "8",
+    "impact_bps_per_pct_nav": "0.5"
+  },
+  "venues": {
+    "IBKR": {
+      "taker_fee_bps": "2",
+      "maker_fee_bps": "1",
+      "min_fee": "1",
+      "slippage_bps": "5",
+      "impact_bps_per_pct_nav": "0.3"
+    },
+    "TIGER": {
+      "taker_fee_bps": "3",
+      "maker_fee_bps": "1",
+      "min_fee": "1",
+      "slippage_bps": "6",
+      "impact_bps_per_pct_nav": "0.35"
+    },
+    "OKX": {
+      "taker_fee_bps": "8",
+      "maker_fee_bps": "2",
+      "min_fee": "0",
+      "slippage_bps": "3",
+      "impact_bps_per_pct_nav": "0.6"
+    },
+    "BYBIT": {
+      "taker_fee_bps": "6",
+      "maker_fee_bps": "1",
+      "min_fee": "0",
+      "slippage_bps": "3",
+      "impact_bps_per_pct_nav": "0.6"
+    }
+  }
+}

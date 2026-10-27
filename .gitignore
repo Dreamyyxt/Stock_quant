@@ -1,0 +1,27 @@
+# Environments
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Secrets — never commit these
+config/.env
+config/private_key.pem
+config/public_key.pem
+*.pem
+# Tiger OpenAPI config export: contains the RSA private key in plain text
+tiger_openapi_config.properties
+*.properties
+
+# Runtime state and logs
+state/
+logs/
+*.log
+*.jsonl
+
+# Agent / editor noise
+.openclaw/
+.DS_Store
+.trader_last_check.json
+.trader_monitor_last_check

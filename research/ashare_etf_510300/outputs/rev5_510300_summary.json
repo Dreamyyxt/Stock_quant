@@ -1,0 +1,21 @@
+{
+  "meta": {
+    "strategy_name": "5日跌幅最大档买入（沪深300ETF 逆势）",
+    "symbol": "510300.SH",
+    "start": "2019-08-08",
+    "end": "2026-10-23",
+    "initial_cash": 1000000.0,
+    "window_start_value": 1000000.0,
+    "final_value": 995609.41,
+    "market": "china_a",
+    "generated_at": "2026-10-26T14:26:04+08:00"
+  },
+  "summary": {
+    "total_return_pct": -0.4390589999999972,
+    "annual_return_pct": -0.0635614855327038,
+    "max_drawdown_pct": 24.981683233648322,
+    "sharpe": 0.06346479408925589,
+    "win_rate_pct": 51.388888888888886,
+    "total_trades": 72
+  }
+}

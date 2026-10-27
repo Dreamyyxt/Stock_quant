@@ -1,0 +1,256 @@
+{
+  "meta": {
+    "strategy_name": "TSLA 开盘区间突破（引擎回放）",
+    "symbol": "TSLA",
+    "start": "2021-10-31",
+    "end": "2026-10-23",
+    "initial_cash": 100000.0,
+    "window_start_value": 100000.0,
+    "final_value": 367694.35,
+    "market": "us",
+    "generated_at": "2026-10-25T14:58:35+08:00",
+    "engine": "intraday/engine.py (replay, sim execution)",
+    "sessions_replayed": 1246
+  },
+  "summary": {
+    "total_return_pct": 267.69,
+    "annual_return_pct": 29.88,
+    "max_drawdown_pct": 28.61,
+    "sharpe": 1.04,
+    "win_rate_pct": 52.51,
+    "total_trades": 838
+  },
+  "extra": {
+    "stats": {
+      "start": "2021-10-31",
+      "end": "2026-10-23",
+      "sessions": 1246,
+      "initial_cash": 100000.0,
+      "final_value": 367694.35,
+      "total_return_pct": 267.69,
+      "annual_return_pct": 29.88,
+      "max_drawdown_pct": 28.61,
+      "sharpe": 1.04,
+      "win_rate_pct": 52.51,
+      "total_trades": 838,
+      "avg_net_bp": 18.2,
+      "median_net_bp": 11.55,
+      "t_stat": 2.31,
+      "longs": 418,
+      "long_avg_bp": 19.63,
+      "shorts": 420,
+      "short_avg_bp": 16.78,
+      "stop_exits": 40,
+      "close_exits": 798,
+      "avg_win_pct": 1.827,
+      "avg_loss_pct": -1.637,
+      "longest_loss_streak": 9,
+      "halted_sessions": 0,
+      "sessions_over_10pct_dd": 1,
+      "worst_session_pct": -6.4,
+      "best_session_pct": 16.26,
+      "trades_per_day": 0.673,
+      "yearly": {
+        "2021": {
+          "n": 27,
+          "net_bp": 30.29,
+          "total_pct": 7.56,
+          "hit": 0.444
+        },
+        "2022": {
+          "n": 177,
+          "net_bp": 43.65,
+          "total_pct": 101.82,
+          "hit": 0.542
+        },
+        "2023": {
+          "n": 166,
+          "net_bp": 6.67,
+          "total_pct": 7.76,
+          "hit": 0.53
+        },
+        "2024": {
+          "n": 164,
+          "net_bp": -10.09,
+          "total_pct": -17.78,
+          "hit": 0.518
+        },
+        "2025": {
+          "n": 168,
+          "net_bp": 25.1,
+          "total_pct": 44.01,
+          "hit": 0.506
+        },
+        "2026": {
+          "n": 136,
+          "net_bp": 22.36,
+          "total_pct": 32.75,
+          "hit": 0.544
+        }
+      }
+    },
+    "parity": {
+      "available": true,
+      "rows": [
+        {
+          "label": "累计收益",
+          "key": "total_return_pct",
+          "unit": "%",
+          "engine": 267.69,
+          "backtest": 279.78692146439744,
+          "delta": -12.097
+        },
+        {
+          "label": "年化收益",
+          "key": "annual_return_pct",
+          "unit": "%",
+          "engine": 29.88,
+          "backtest": 30.981614137085643,
+          "delta": -1.102
+        },
+        {
+          "label": "最大回撤",
+          "key": "max_drawdown_pct",
+          "unit": "%",
+          "engine": 28.61,
+          "backtest": 27.112306362832662,
+          "delta": 1.498
+        },
+        {
+          "label": "夏普",
+          "key": "sharpe",
+          "unit": "",
+          "engine": 1.04,
+          "backtest": 1.0598399121971793,
+          "delta": -0.02
+        },
+        {
+          "label": "胜率",
+          "key": "win_rate_pct",
+          "unit": "%",
+          "engine": 52.51,
+          "backtest": 52.50596658711218,
+          "delta": 0.004
+        },
+        {
+          "label": "笔数",
+          "key": "total_trades",
+          "unit": "",
+          "engine": 838,
+          "backtest": 838,
+          "delta": 0.0
+        },
+        {
+          "label": "单笔净收益",
+          "key": "avg_net_bp",
+          "unit": "bp",
+          "engine": 18.2,
+          "backtest": 18.49898568019093,
+          "delta": -0.299
+        },
+        {
+          "label": "t 统计量",
+          "key": "t_stat",
+          "unit": "",
+          "engine": 2.31,
+          "backtest": 2.359247099508529,
+          "delta": -0.049
+        },
+        {
+          "label": "多头笔数",
+          "key": "longs",
+          "unit": "",
+          "engine": 418,
+          "backtest": 418,
+          "delta": 0.0
+        },
+        {
+          "label": "空头笔数",
+          "key": "shorts",
+          "unit": "",
+          "engine": 420,
+          "backtest": 420,
+          "delta": 0.0
+        },
+        {
+          "label": "止损出场",
+          "key": "stop_exits",
+          "unit": "",
+          "engine": 40,
+          "backtest": 40,
+          "delta": 0.0
+        },
+        {
+          "label": "收盘出场",
+          "key": "close_exits",
+          "unit": "",
+          "engine": 798,
+          "backtest": 798,
+          "delta": 0.0
+        }
+      ],
+      "reference_meta": {
+        "strategy_name": "TSLA 开盘区间突破（ORB）",
+        "symbol": "TSLA",
+        "start": "2021-10-31",
+        "end": "2026-10-23",
+        "initial_cash": 100000.0,
+        "window_start_value": 100000.0,
+        "final_value": 379786.92146439746,
+        "market": "us",
+        "generated_at": "2026-10-25T12:35:00+08:00"
+      },
+      "reference_yearly": {
+        "2021": {
+          "n": 27,
+          "net_bp": 30.557037037037045,
+          "total_pct": 7.712504689812816,
+          "hit": 0.4444444444444444
+        },
+        "2022": {
+          "n": 177,
+          "net_bp": 43.672994350282494,
+          "total_pct": 102.93188025028837,
+          "hit": 0.5423728813559322
+        },
+        "2023": {
+          "n": 166,
+          "net_bp": 6.658734939759038,
+          "total_pct": 7.733013358821905,
+          "hit": 0.5301204819277109
+        },
+        "2024": {
+          "n": 164,
+          "net_bp": -8.758292682926829,
+          "total_pct": -15.965666368313247,
+          "hit": 0.5182926829268293
+        },
+        "2025": {
+          "n": 168,
+          "net_bp": 25.12113095238096,
+          "total_pct": 44.269515894522215,
+          "hit": 0.5059523809523809
+        },
+        "2026": {
+          "n": 136,
+          "net_bp": 22.48272058823529,
+          "total_pct": 33.17695594291092,
+          "hit": 0.5441176470588235
+        }
+      },
+      "trades": {
+        "available": true,
+        "matched_dates": 838,
+        "backtest_trades": 838,
+        "engine_trades": 838,
+        "only_in_backtest": [],
+        "only_in_engine": [],
+        "side_mismatch": 0,
+        "mean_abs_diff_bp": 0.467,
+        "median_abs_diff_bp": 0.06,
+        "p95_abs_diff_bp": 0.29,
+        "max_abs_diff_bp": 92.08
+      }
+    }
+  }
+}

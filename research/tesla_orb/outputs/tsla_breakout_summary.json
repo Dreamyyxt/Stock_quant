@@ -1,0 +1,100 @@
+{
+  "meta": {
+    "strategy_name": "TSLA 开盘区间突破（ORB）",
+    "symbol": "TSLA",
+    "start": "2021-10-31",
+    "end": "2026-10-23",
+    "initial_cash": 100000.0,
+    "window_start_value": 100000.0,
+    "final_value": 379786.92146439746,
+    "market": "us",
+    "generated_at": "2026-10-25T12:35:00+08:00"
+  },
+  "summary": {
+    "total_return_pct": 279.78692146439744,
+    "annual_return_pct": 30.981614137085643,
+    "max_drawdown_pct": 27.112306362832662,
+    "sharpe": 1.0598399121971793,
+    "win_rate_pct": 52.50596658711218,
+    "total_trades": 838
+  },
+  "extra": {
+    "stats": {
+      "trades": 838,
+      "signals": 838,
+      "skipped_size": 0,
+      "avg_net_bp": 18.49898568019093,
+      "median_net_bp": 11.555,
+      "hit_rate": 0.5250596658711217,
+      "t_stat": 2.359247099508529,
+      "longs": 418,
+      "shorts": 420,
+      "avg_win_pct": 1.8270156818181817,
+      "avg_loss_pct": -1.6303150753768845,
+      "per_day": 0.6725521669341894,
+      "stop_exits": 40,
+      "close_exits": 798
+    },
+    "buy_and_hold": {
+      "entry_date": "2021-11-01",
+      "exit_date": "2026-10-23",
+      "entry_price": 381.67,
+      "exit_price": 372.15,
+      "shares": 262,
+      "return_pct": -2.4943013598134667,
+      "max_drawdown_pct": -73.63933546388232
+    },
+    "rule": "orb",
+    "yearly": {
+      "2021": {
+        "n": 27,
+        "net_bp": 30.557037037037045,
+        "total_pct": 7.712504689812816,
+        "hit": 0.4444444444444444
+      },
+      "2022": {
+        "n": 177,
+        "net_bp": 43.672994350282494,
+        "total_pct": 102.93188025028837,
+        "hit": 0.5423728813559322
+      },
+      "2023": {
+        "n": 166,
+        "net_bp": 6.658734939759038,
+        "total_pct": 7.733013358821905,
+        "hit": 0.5301204819277109
+      },
+      "2024": {
+        "n": 164,
+        "net_bp": -8.758292682926829,
+        "total_pct": -15.965666368313247,
+        "hit": 0.5182926829268293
+      },
+      "2025": {
+        "n": 168,
+        "net_bp": 25.12113095238096,
+        "total_pct": 44.269515894522215,
+        "hit": 0.5059523809523809
+      },
+      "2026": {
+        "n": 136,
+        "net_bp": 22.48272058823529,
+        "total_pct": 33.17695594291092,
+        "hit": 0.5441176470588235
+      }
+    },
+    "params": {
+      "initial_cash": 100000,
+      "exposure": 1.0,
+      "cost_bp_side": 2.0076547744687385,
+      "or_minutes": 30,
+      "last_entry_minute": 630,
+      "stop_mult": 2.0,
+      "stop_pct": 0.0,
+      "target_pct": 0.0,
+      "max_hold": 0,
+      "momentum_threshold": 0.01,
+      "gap_pct": 0.01
+    }
+  }
+}

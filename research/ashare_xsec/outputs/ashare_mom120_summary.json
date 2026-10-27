@@ -1,0 +1,21 @@
+{
+  "meta": {
+    "strategy_name": "A股横截面·120日动量",
+    "symbol": "中证800成分股",
+    "start": "2019-01-18",
+    "end": "2026-10-23",
+    "initial_cash": 2000000.0,
+    "window_start_value": 2000000.0,
+    "final_value": 8249650.97,
+    "market": "china_a",
+    "generated_at": "2026-10-26T13:38:44+08:00"
+  },
+  "summary": {
+    "total_return_pct": 312.48254849999995,
+    "annual_return_pct": 20.942344814103375,
+    "max_drawdown_pct": 47.04843052569617,
+    "sharpe": 0.7464165009388745,
+    "win_rate_pct": 48.359966358284275,
+    "total_trades": 4756
+  }
+}
