@@ -418,6 +418,115 @@ def _schedule_provider(fault: str):
     return lambda: status_snapshot(cal, ScheduleStore(sched_path))
 
 
+def _run_demo_tick(ledger_path: str) -> None:
+    """在给定路径上跑一拍真实的 A 股调仓，只为把账本造出来（演示用）。"""
+    import sys as _sys
+    from datetime import date as _date
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in _sys.path:
+        _sys.path.insert(0, here)
+    import quantos_schedule as _qs
+    from quantos_core.schedule import RebalanceSpec as _Spec
+
+    day = _date.fromisoformat(os.environ.get("QOS_DEMO_DAY", "2026-09-30"))
+    runner = _qs.AshareRunner(
+        pack_path=_qs.PACK_PATH, data_dir=_qs.DATA_DIR, venue=_qs.VENUE,
+        params={"top_n": "4"}, symbols=6, bars=80, min_bars=40,
+        nav=Decimal("100000"), quota_pct=Decimal("0.9"),
+        ledger_path=ledger_path, risk_path=ledger_path + ".risk.json",
+        dry_frame_day=day)
+    runner(_Spec("ashare_ew20", "v1", _date(2026, 1, 5), 20, "rebalance"), day)
+
+
+def _ledger_provider(fault: str):
+    """
+    账本（B10）的**只读**快照来源。
+
+    读的是调度器同一份文件 —— 页面上说"持有 4 只"和下一拍拿去算差额的
+    必须是同一份账本，否则看板就是一封二次转述的信。
+
+    `--fault ledger-corrupt` 把临时副本截半，验证这张卡片面对坏档时
+    是**红着说"读不出来"**，而不是显示 0 持仓（那会被读成"空仓"）。
+    """
+    from quantos_core.ledger_store import LedgerStore
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    ledger_path = os.path.join(root, "state", "quantos", "ashare_ledger.json")
+    risk_path = os.path.join(root, "state", "quantos", "ashare_risk.json")
+
+    fault = (fault or "").strip().lower()
+    if fault == "ledger-demo":
+        # 用真实行情在**临时目录**里跑一拍，落出真账本给页面看。
+        # 为什么不直接读真实账本：真实账本要等第一次 cron tick 才有内容，
+        # 而"卡片长什么样"这件事现在就得验证。临时目录保证不碰真状态。
+        tmpdir = tempfile.mkdtemp(prefix="qos-ledger-demo-")
+        ledger_path = os.path.join(tmpdir, "ashare_ledger.json")
+        try:
+            _run_demo_tick(ledger_path)
+        except Exception as exc:                        # noqa: BLE001
+            return lambda: {
+                "available": False,
+                "reason": f"演示账本没造出来：{type(exc).__name__}: {exc}",
+                "status": "corrupt", "positions": [], "position_count": 0,
+                "cash": {}, "entry_count": 0, "net_deposits_base": "0",
+                "healthy": False,
+            }
+
+    if fault == "ledger-corrupt":
+        tmp = os.path.join(tempfile.mkdtemp(prefix="qos-ledger-"),
+                           "ashare_ledger.json")
+        if os.path.isfile(ledger_path):
+            with open(ledger_path, "rb") as src:
+                blob = src.read()
+            with open(tmp, "wb") as dst:
+                dst.write(blob[: len(blob) // 2])          # 写一半 = 断电现场
+        else:
+            with open(tmp, "wb") as dst:
+                dst.write(b'{"kind":"quantos.ledger","schema":1,')
+        ledger_path = tmp
+
+    def snapshot():
+        store = LedgerStore(ledger_path)
+        result = store.load()
+        ledger = result.ledger
+        positions = []
+        cash = {}
+        net_deposits = "0"
+        entry_count = result.entry_count
+        if ledger is not None:
+            net_deposits = str(ledger.net_deposits_base)
+            entry_count = ledger.entry_count
+            cash = {f"{acct}|{ccy}": str(amount)
+                    for (acct, ccy), amount in ledger.cash_native().items()}
+            for (venue, symbol), pos in sorted(ledger.positions().items()):
+                positions.append({
+                    "venue": venue, "symbol": symbol,
+                    "quote_ccy": pos.quote_ccy, "qty": str(pos.qty),
+                    "strategy_ids": sorted(pos.attr_qty),
+                })
+        return {
+            "available": True,
+            "status": result.status,
+            "path": os.path.relpath(ledger_path, root),
+            "source": result.source,
+            "detail": result.detail,
+            "saved_at": result.saved_at,
+            "entry_count": entry_count,
+            "warnings": list(result.warnings),
+            "cash": cash,
+            "positions": positions,
+            "position_count": len(positions),
+            "net_deposits_base": net_deposits,
+            "risk_state_path": os.path.relpath(risk_path, root),
+            # 只有 ok 才算健康：absent 是"还没有"，corrupt/schema 是"不可信"，
+            # 三者在页面上必须长得不一样。
+            "healthy": result.status == "ok",
+        }
+
+    return snapshot
+
+
 class _DemoBroker:
     """
     演示用券商账单端。
@@ -587,12 +696,17 @@ def _apply_fault(fault: str, metrics: OpsMetrics, registry: StrategyRegistry,
         # 这里不用额外动作 —— 也不该去动真实状态文件。
         pass
 
+    elif fault == "ledger-corrupt" or fault == "ledger-demo":
+        # 账本坏档 / 演示账本都由 `_ledger_provider(fault)` 在临时副本上造，
+        # 同样不动真文件。
+        pass
+
     elif fault:
         raise SystemExit(
             "未知故障类型：" + fault + "（可选：stale-market / risk-halt / "
             "unknown-order / silent-strategy / eod-mismatch / live-not-armed / "
             "stale-model / unbooked-dividend / sched-in-doubt / "
-            "sched-stale-calendar）")
+            "sched-stale-calendar / ledger-corrupt / ledger-demo）")
 
 
 # --------------------------------------------------------------------------- #
@@ -624,7 +738,8 @@ def main(argv=None) -> int:
                          risk_model_store=rt["risk_model_store"],
                          canary_router=rt["canary_router"],
                          research_inbox=rt["research_inbox"],
-                         schedule_provider=_schedule_provider(args.fault))
+                         schedule_provider=_schedule_provider(args.fault),
+                         ledger_provider=_ledger_provider(args.fault))
 
     if args.once and args.eod:
         print(json.dumps(rt["eod_run"].to_dict(), ensure_ascii=False, indent=2,
@@ -648,6 +763,7 @@ def main(argv=None) -> int:
     print(f"  实盘开关：{server.url}/api/ops/live")
     print(f"  组合视图：{server.url}/api/ops/portfolio")
     print(f"  策略排期：{server.url}/api/ops/schedule")
+    print(f"  账本状态：{server.url}/api/ops/ledger")
     print(f"  写操作：{'已启用（需 X-Ops-Token）' if args.token else '已禁用（未配置 QUANTOS_OPS_TOKEN）'}")
     if html is None:
         print(f"  [警告] 找不到页面文件 {args.html}，只提供 API")

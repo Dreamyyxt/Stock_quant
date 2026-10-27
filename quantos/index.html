@@ -867,6 +867,16 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--a
         <div id="scheduleBody"></div>
       </div>
 
+      <!-- ======== 账本（B10 · 落盘 / 恢复 / 幂等） ======== -->
+      <div class="card">
+        <div class="card-t wrap">
+          <h3>账本</h3>
+          <span class="hint">每拍整份快照落盘 · 重启从同一份持仓继续 · 坏档拒绝运行</span>
+          <div class="right"><span class="pill p-mute" id="ledgerAt">—</span></div>
+        </div>
+        <div id="ledgerBody"></div>
+      </div>
+
       <div class="card">
         <div class="card-t">
           <h3>订单与执行</h3>
@@ -994,6 +1004,7 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--a
     /* B9：策略排期。整块来自只读端点 /api/ops/schedule。
        同样留 null 表示「看不到」，不表示「今天不用跑」—— 这两件事差别很大。 */
     schedule: null, scheduleReason: '',
+    ledger: null, ledgerReason: '',
     overall: 'not_configured', headline: '', rootCauses: [], components: {},
     at: 0, token: '', timer: null, busy: false
   };
@@ -1165,6 +1176,21 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--a
       } else {
         LIVE.schedule = data;
         LIVE.scheduleReason = '';
+      }
+      fin();
+    });
+    /* B10：账本。读不出来时必须红着说"读不出来"，不能显示 0 持仓 ——
+       0 持仓会被读成"空仓"，而空仓的下一拍会把已有持仓重新买一遍。 */
+    opsReq('GET', '/api/ops/ledger', null, function (err, data) {
+      if (err) {
+        LIVE.ledger = null;
+        LIVE.ledgerReason = err.message;
+      } else if (!data || data.available === false) {
+        LIVE.ledger = null;
+        LIVE.ledgerReason = (data && data.reason) || '运维服务未接入账本';
+      } else {
+        LIVE.ledger = data;
+        LIVE.ledgerReason = '';
       }
       fin();
     });
@@ -1613,6 +1639,7 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--a
     renderCanary();        /* B7 · T-602 灰度路由 */
     renderResearch();      /* B7 · T-603 AI 收件箱 */
     renderSchedule();      /* B9 · 交易日历与策略排期 */
+    renderLedger();        /* B10 · 账本落盘与恢复 */
     renderDrawer();
   }
 
@@ -3993,6 +4020,153 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--a
       } else {
         atEl.className = 'pill p-ok';
         atEl.textContent = rows.length + ' 个排期正常';
+      }
+    }
+  }
+
+  /* ---------------- B10 · 账本 ---------------- */
+
+  /* 账本是人民币口径，不能复用全局 money()（那个写死了 $）。 */
+  function ledgerMoney(v) {
+    var n = rmNum(v);
+    if (n === null) return '—';
+    var neg = n < 0;
+    var s = String(Math.abs(Math.round(n)));
+    s = s.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    return (neg ? '-' : '') + '¥' + s;
+  }
+  function ledgerQty(v) {
+    var n = rmNum(v);
+    if (n === null) return '—';
+    return n.toFixed(n === Math.round(n) ? 0 : 2);
+  }
+
+  var LEDGER_STATUS_META = {
+    ok:                    { label: '已落盘',     pill: 'p-ok' },
+    absent:                { label: '还没落过盘', pill: 'p-mute' },
+    recovered_from_backup: { label: '用备份恢复', pill: 'p-warn' },
+    corrupt:               { label: '账本损坏',   pill: 'p-bad' },
+    schema_mismatch:       { label: '版本不兼容', pill: 'p-bad' }
+  };
+
+  function ledgerStatusMeta(status) {
+    return LEDGER_STATUS_META[String(status || '')] ||
+      { label: '状态未知', pill: 'p-bad' };
+  }
+
+  function renderLedger() {
+    var host = document.getElementById('ledgerBody');
+    var atEl = document.getElementById('ledgerAt');
+    if (!host) return;
+    if (atEl) { atEl.className = 'pill p-mute'; atEl.textContent = '—'; }
+
+    if (!LIVE.on) {
+      host.innerHTML = noteBlockHtml('需要连接运维服务后才能查看账本。' +
+        '账本不是"页面上估个数"能替代的 —— 下一拍拿哪份持仓算差额，' +
+        '取决于这个文件里写了什么，所以看不到就如实说看不到。');
+      return;
+    }
+    var lg = LIVE.ledger;
+    if (!lg) {
+      host.innerHTML = noteBlockHtml('账本不可用：' +
+        (LIVE.ledgerReason || '/api/ops/ledger 未返回数据') +
+        '。此时不能假定"空仓"，空账本会让下一拍把已有持仓重新买一遍。');
+      return;
+    }
+
+    var meta = ledgerStatusMeta(lg.status);
+    var positions = lg.positions || [];
+    var cash = lg.cash || {};
+    var html = [];
+
+    html.push('<div class="attr-kv"><span class="k">状态</span>' +
+      '<span class="v"><span class="pill ' + meta.pill + '">' +
+      '<span class="dot"></span>' + esc(meta.label) + '</span> ' +
+      '<span class="num" style="margin-left:6px">' + esc(String(lg.status || '—')) +
+      '</span></span></div>' +
+      '<div class="attr-kv"><span class="k">分录</span>' +
+      '<span class="v num">' + (rmNum(lg.entry_count) === null ? '—'
+        : rmNum(lg.entry_count).toFixed(0)) + ' 条</span></div>' +
+      '<div class="attr-kv"><span class="k">净入金</span>' +
+      '<span class="v num">¥' + ledgerMoney(lg.net_deposits_base) + '</span></div>' +
+      '<div class="attr-kv"><span class="k">持仓</span>' +
+      '<span class="v num">' + positions.length + ' 只</span></div>' +
+      '<div class="attr-kv"><span class="k">最近写入</span>' +
+      '<span class="v num">' + esc(schedDay(String(lg.saved_at || '').slice(0, 10))) +
+      '</span></div>' +
+      '<div class="attr-kv"><span class="k">文件</span>' +
+      '<span class="v num">' + esc(String(lg.path || '—')) +
+      (lg.source === 'backup' ? '（当前用的是 .bak）' : '') + '</span></div>');
+
+    /* 坏档与"用了备份"必须最显眼：这两种情况下数字看着正常，其实是旧账。 */
+    if (lg.healthy === false && lg.status !== 'absent') {
+      html.push('<div class="attr-warn" style="margin-top:10px">' + ICON_WARN_SMALL +
+        '<span>' + esc(String(lg.detail || '账本不可信')) +
+        '。<b>这种状态下调度器拒绝运行</b> —— 它不会用空账本顶上，' +
+        '因为空账本等于把已有持仓当成 0 重新买一遍。</span></div>');
+    }
+    if (lg.status === 'absent') {
+      html.push('<div class="attr-warn" style="margin-top:10px">' + ICON_WARN_SMALL +
+        '<span>还没有落过盘：第一次 tick 会按 <code>--nav</code> 建仓，' +
+        '之后每拍结束整份快照原子替换。</span></div>');
+    }
+    var warns = lg.warnings || [];
+    for (var w = 0; w < warns.length; w++) {
+      html.push('<div class="attr-warn" style="margin-top:8px">' + ICON_WARN_SMALL +
+        '<span>' + esc(String(warns[w])) + '</span></div>');
+    }
+
+    if (positions.length) {
+      html.push('<div class="cy-list" style="margin-top:10px">');
+      for (var i = 0; i < positions.length; i++) {
+        var p = positions[i] || {};
+        var sids = (p.strategy_ids || []).join('、');
+        html.push('<div class="cy-row">' +
+          '<div class="cy-top">' +
+            '<span class="cy-id">' + esc(String(p.venue || '—')) + ' · ' +
+              esc(String(p.symbol || '—')) + '</span>' +
+            '<span class="pill p-mute">' + esc(String(p.quote_ccy || '—')) + '</span>' +
+          '</div>' +
+          '<div class="cy-meta">' +
+            '<span>数量 ' + ledgerQty(p.qty) + '</span>' +
+            (sids ? '<span>归属 ' + esc(sids) + '</span>' : '<span>归属 无主</span>') +
+          '</div>' +
+        '</div>');
+      }
+      html.push('</div>');
+    } else if (lg.status !== 'absent') {
+      html.push(noteBlockHtml('账本里没有非零持仓。'));
+    }
+
+    var cashKeys = Object.keys(cash);
+    if (cashKeys.length) {
+      html.push('<div class="divider"></div>');
+      for (var c = 0; c < cashKeys.length; c++) {
+        html.push('<div class="attr-kv"><span class="k">现金 ' +
+          esc(cashKeys[c]) + '</span><span class="v num">' +
+          ledgerMoney(cash[cashKeys[c]]) + '</span></div>');
+      }
+    }
+
+    html.push('<div class="divider"></div><p class="note">' +
+      '三条规矩：<b>存整份状态，不重放分录</b>（持仓成本、滑点、策略归属是下单入参算出来的，' +
+      '分录里没有这些参数，重放不出来）；' +
+      '<b>恢复时重建幂等索引</b>（只把数字读回来、不重建去重表，文件内容一模一样但重复成交会被再记一遍）；' +
+      '<b>写不进去就算失败</b>（落盘失败还当成功，下一拍会从旧持仓再买一遍）。' +
+      '本页只读，账本运维请用 scripts/quantos_schedule.py ledger。</p>');
+
+    host.innerHTML = html.join('');
+
+    if (atEl) {
+      if (lg.healthy === true) {
+        atEl.className = 'pill p-ok';
+        atEl.textContent = positions.length + ' 只持仓';
+      } else if (lg.status === 'absent') {
+        atEl.className = 'pill p-mute';
+        atEl.textContent = '还没有账本';
+      } else {
+        atEl.className = 'pill p-bad';
+        atEl.textContent = meta.label;
       }
     }
   }

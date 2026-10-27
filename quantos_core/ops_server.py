@@ -67,7 +67,8 @@ class OpsService:
                  token: str = "", clock: Callable[[], datetime] = utcnow,
                  series=None, live_gate=None,
                  risk_model_store=None, canary_router=None,
-                 research_inbox=None, schedule_provider=None):
+                 research_inbox=None, schedule_provider=None,
+                 ledger_provider=None):
         self.metrics = metrics
         self.registry = registry
         self._prices_provider = prices_provider
@@ -87,6 +88,8 @@ class OpsService:
         #: B9 策略排期（只读）。给的是一个**返回快照的函数**，不是调度器对象 ——
         #: 只读看板不该握着「能推进一拍」的东西（那等于给它一个下单按钮）。
         self.schedule_provider = schedule_provider
+        #: B10 账本（只读）。同样只给快照函数 —— 看板能看见持仓，但不能改账本。
+        self.ledger_provider = ledger_provider
 
     # -- 读 -------------------------------------------------------------- #
 
@@ -194,6 +197,31 @@ class OpsService:
                     "needs_attention": [], "healthy": False}
 
     # -- 写 -------------------------------------------------------------- #
+
+    def ledger(self) -> Dict[str, Any]:
+        """
+        账本状态（B10）。只读。
+
+        这一格最重要的信息不是"持仓多少"，而是**账本可不可信**：
+        `status` 是 ok / absent / corrupt / schema_mismatch / from-backup。
+        坏档时页面必须红，因为它的后果是"下一拍从空仓重新买一遍"。
+        """
+        if self.ledger_provider is None:
+            return {"as_of": self._clock().isoformat(), "available": False,
+                    "reason": "未接入账本", "status": "absent",
+                    "positions": [], "position_count": 0, "cash": {},
+                    "entry_count": 0, "net_deposits_base": "0",
+                    "healthy": False}
+        try:
+            payload = dict(self.ledger_provider())
+        except (RuntimeError, OSError, ValueError) as exc:
+            return {"as_of": self._clock().isoformat(), "available": False,
+                    "reason": f"账本快照读取失败：{type(exc).__name__}: {exc}",
+                    "status": "corrupt", "positions": [], "position_count": 0,
+                    "cash": {}, "entry_count": 0, "net_deposits_base": "0",
+                    "healthy": False}
+        payload.setdefault("as_of", self._clock().isoformat())
+        return payload
 
     def perform(self, payload: Mapping[str, Any], *, actor: str) -> Dict[str, Any]:
         """
@@ -349,6 +377,9 @@ class _Handler(BaseHTTPRequestHandler):
 
         if path == "/api/ops/schedule":
             return self._json(HTTPStatus.OK, self.service.schedule())
+
+        if path == "/api/ops/ledger":
+            return self._json(HTTPStatus.OK, self.service.ledger())
 
         return self._json(HTTPStatus.NOT_FOUND,
                           {"ok": False, "error": f"未知路径 {path}"})

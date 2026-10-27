@@ -132,6 +132,7 @@ MockXHR.prototype.send = function (body) {
     else if (url.indexOf('/api/ops/live') === 0) data = fixture.live;
     else if (url.indexOf('/api/ops/portfolio') === 0) data = fixture.portfolio;
     else if (url.indexOf('/api/ops/schedule') === 0) data = fixture.schedule;
+    else if (url.indexOf('/api/ops/ledger') === 0) data = fixture.ledger;
     if (data === null || data === undefined) {
       self.status = 404;
       self.responseText = '{"error":"not found"}';
@@ -235,6 +236,8 @@ function run(mode) {
     });
     /* B9：排期在离线时最容易被当成"今天没有到期策略"。必须明说看不到。 */
     contains('离线: 策略排期明说需要运维服务', grab('scheduleBody'), '需要连接运维服务');
+    /* B10：账本同理 —— 离线时绝不能用演示持仓冒充真实持仓。 */
+    contains('离线: 账本明说需要运维服务', grab('ledgerBody'), '需要连接运维服务');
     return;
   }
 
@@ -542,6 +545,41 @@ function run(mode) {
     check('排期: 不可用时不挂绿灯',
           registry['schedAt'].className.indexOf('p-ok') < 0,
           registry['schedAt'].className);
+  }
+
+  /* ---------- B10 · 账本 ---------- */
+
+  const lgBody = grab('ledgerBody');
+  const lg = fixture.ledger;
+  if (lg && lg.available !== false) {
+    contains('账本: 状态与后端一致', lgBody, String(lg.status));
+    (lg.positions || []).forEach(function (p) {
+      contains('账本: 列出持仓 ' + p.symbol, lgBody, p.symbol);
+    });
+    if (!(lg.positions || []).length) {
+      contains('账本: 没有持仓时如实说', lgBody, '没有非零持仓');
+    }
+    if (lg.status === 'absent') {
+      contains('账本: 未落盘时说明首次建仓', lgBody, '还没有落过盘');
+      check('账本: 未落盘不挂绿灯',
+            registry['ledgerAt'].className.indexOf('p-ok') < 0,
+            registry['ledgerAt'].className);
+    } else if (lg.healthy === true) {
+      check('账本: 健康时右上角挂绿',
+            registry['ledgerAt'].className.indexOf('p-ok') >= 0,
+            registry['ledgerAt'].className);
+    } else {
+      /* 坏档最危险的地方是"数字看着正常，其实是旧账" —— 必须红着说。 */
+      contains('账本: 坏档要写清拒绝运行', lgBody, '拒绝运行');
+      check('账本: 坏档不挂绿灯',
+            registry['ledgerAt'].className.indexOf('p-ok') < 0,
+            registry['ledgerAt'].className);
+    }
+  } else {
+    contains('账本: 不可用时明说', lgBody, '不可用');
+    check('账本: 不可用时不挂绿灯',
+          registry['ledgerAt'].className.indexOf('p-ok') < 0,
+          registry['ledgerAt'].className);
   }
 }
 

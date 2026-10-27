@@ -535,6 +535,16 @@ class Ledger:
         if pos is None:
             return None
         ts = ts or utcnow()
+        ref_id = ref or f"split-{venue}-{symbol}-{ts.date()}"
+        # 幂等门必须在改数量**之前**。
+        #
+        # 这里与 apply_fill 的差别很关键：apply_fill 是先查 refs 再动持仓，
+        # 而拆股是"先算新数量、再 post" —— 如果只依赖 post() 去重，重复的
+        # 拆股通知（或重启后重放同一条公司行动）会让数量乘第二次，而账本里
+        # 始终只有一条 SPLIT 分录：**分录数、金额全都对得上，只有持仓翻倍**。
+        # 这种错不会在任何恒等式里露头，只能靠这道门。
+        if ("split", ref_id, "SPLIT") in self._refs:
+            return pos
         before = pos.qty
         pos.qty = q(before * ratio, 10)
         for sid in list(pos.attr_qty):
@@ -542,7 +552,7 @@ class Ledger:
         # 成本金额、已实现、滑点一律不动（见 docstring）。
         ccy = pos.quote_ccy
         entry = self._new_entry(
-            "SPLIT", "split", ref or f"split-{venue}-{symbol}-{ts.date()}",
+            "SPLIT", "split", ref_id,
             [LedgerLine(f"position:{venue}:{symbol}", ccy, debit=_ZERO,
                         credit=_ZERO)],
             ts,

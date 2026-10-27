@@ -60,15 +60,19 @@
 | 策略排期（锚点固定 / claim 三段 / in_doubt 需人工） | `quantos_core/schedule.py` | ✅ B9 |
 | 排期调度命令（calendar / status / plan / tick / resolve） | `scripts/quantos_schedule.py` | ✅ B9 |
 | 校准过的 A 股交易日历（1999 个交易日 / 155 天休市，2018-07~2026-10） | `config/calendar/ashare.json` | ✅ B9 |
+| 状态存储原语（原子写 + kind/schema/sha256 信封 + 备份回退） | `quantos_core/state_store.py` | ✅ B10 |
+| 账本落盘与恢复（整份快照 / 幂等索引重建 / 现金与分录交叉核对） | `quantos_core/ledger_store.py` | ✅ B10 |
+| cron 入口（一拍一进程 + 单实例锁 + 退出码分级） | `scripts/quantos_tick.py` | ✅ B10 |
+| 进程编排（四进程状态 / 缺口如实上报 / crontab 片段） | `scripts/quantos_up.py` | ✅ B10 |
 | 风险模型体检（真实 A 股 / 合成数据双源） | `scripts/quantos_risk_check.py` | ✅ B7 |
 | 策略组合体检（风险/等风险/预算/灰度/AI） | `scripts/quantos_portfolio_check.py` | ✅ B6 |
-| 控制台 | `quantos/index.html` | ✅ B4 实盘就绪 + 归因日报；B7 加风险模型 / 灰度 / AI 收件箱；B9 加策略排期；已发布在线版（B5 多场所未上屏） |
+| 控制台 | `quantos/index.html` | ✅ B4 实盘就绪 + 归因日报；B7 加风险模型 / 灰度 / AI 收件箱；B9 加策略排期；B10 加账本；已发布在线版（B5 多场所未上屏） |
 | 既有实盘链路 | `main.py` / `core/` / `execution/` / `risk/` | 🟡 单券商单账户，待接契约层 |
 
 跑全部验收：
 
 ```bash
-.venv/bin/python scripts/quantos_verify.py     # 12 套件 / 1357 条断言
+.venv/bin/python scripts/quantos_verify.py     # 13 套件 / 1479 条断言
 .venv/bin/python scripts/quantos_crypto_check.py   # Crypto 接入体检（不联网）
 .venv/bin/python scripts/quantos_risk_check.py --source ashare --tail 400   # 真实 A 股估一次 σ
 .venv/bin/python scripts/quantos_risk_check.py --demo --shrinkage 0.5      # 合成数据看收缩效果
@@ -77,6 +81,10 @@
 .venv/bin/python scripts/quantos_schedule.py status             # 每个策略下次什么时候跑
 .venv/bin/python scripts/quantos_schedule.py tick                # 只判定不执行（默认安全）
 .venv/bin/python scripts/quantos_schedule.py tick --execute      # 真跑一拍
+.venv/bin/python scripts/quantos_schedule.py ledger              # 账本状态（可不可信、多少持仓）
+.venv/bin/python scripts/quantos_tick.py --dry-run              # cron 入口演练（拿锁 + 判定）
+.venv/bin/python scripts/quantos_up.py --status                  # 四进程各是什么状态
+.venv/bin/python scripts/quantos_up.py --crontab                 # 打印 crontab 片段
 ```
 
 单独跑某一套：

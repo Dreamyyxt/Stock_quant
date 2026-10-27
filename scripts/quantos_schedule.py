@@ -30,12 +30,15 @@ A 股每天只有一次调仓窗口（收盘后）。一个"敲了就跑"的命�
 
 关于账本
 ========
-本命令的账本是**进程内**的（`Ledger` 还没有落盘能力，那是部署层的事）。
-所以独立进程跑两次 = 第二次从空仓开始建仓，目标权重全部重算一遍。
+B10 起账本**落盘**（`state/quantos/ashare_ledger.json`）：每拍结束整份快照
+原子替换，下一拍（哪怕是新的进程、新的机器重启）从同一份持仓继续算差额。
+首次启动才按 `--nav` 建仓。
 
-这条不是"差不多能用"，是会算错的：第二次的"目标 - 当前"会把已有持仓当成 0。
-所以真跑时会在输出里显式提示；`--repeat N` 在同一进程内连推 N 拍，
-账本也就跟着连续。真实部署必须先解决账本持久化（见 docs/QuantOS/04 的 B10）。
+以前这里是进程内账本，"独立进程跑两次 = 第二次从空仓开始"。那不只是
+"差不多能用"，是会算错的：第二次的"目标 - 当前"会把已有持仓当成 0。
+
+账本文件读不出来时（损坏/版本不符）本命令**直接拒绝运行**，不拿空账本顶上 ——
+空账本和没落盘是同一个后果，但前者看起来一切正常。
 """
 
 from __future__ import annotations
@@ -60,6 +63,7 @@ from quantos_core.capital_allocator import StrategyPolicy, allocate    # noqa: E
 from quantos_core.contracts import D, OrderType                        # noqa: E402
 from quantos_core.idempotency import ClientOrderIdStore                # noqa: E402
 from quantos_core.ledger import Ledger                                 # noqa: E402
+from quantos_core.ledger_store import LedgerStore                       # noqa: E402
 from quantos_core.oms import Oms                                       # noqa: E402
 from quantos_core.risk_engine import RiskEngine, RiskPolicy, RiskState  # noqa: E402
 from quantos_core.schedule import (                                    # noqa: E402
@@ -72,11 +76,14 @@ from quantos_core.strategy_runtime import (                            # noqa: E
     EngineRiskClient, PaperBroker, PaperFillConfig, StrategyRun,
     StrategyRuntime,
 )
+from quantos_core.state_store import RiskStateStore                    # noqa: E402
 
 DATA_DIR = ROOT / "state" / "ashare" / "daily"
 INDEX_CSV = ROOT / "state" / "ashare" / "510300_daily.csv"
 CAL_PATH = ROOT / "config" / "calendar" / "ashare.json"
 SCHED_PATH = ROOT / "state" / "quantos" / "schedule.json"
+LEDGER_PATH = ROOT / "state" / "quantos" / "ashare_ledger.json"
+RISK_PATH = ROOT / "state" / "quantos" / "ashare_risk.json"
 PACK_PATH = ROOT / "research" / "strategy_packs" / "ashare_ew20.strat.py"
 
 TZ = load_tz_or_fail("Asia/Shanghai", "A 股排期")
@@ -161,6 +168,43 @@ def build_frame_for_day(data_dir: Path, venue: str, day: date,
     return MarketFrame(as_of=as_of, venue=venue, series=series), stale
 
 
+def last_close(data_dir: Path, symbol: str, day: date) -> Optional[Decimal]:
+    """
+    单只标的在 `day`（含）之前的最后收盘价。取不到返回 None。
+
+    为什么要单独一个函数：`build_frame_for_day` 只装股票池前 N 只，
+    而持仓里可能有已经掉出前 N 的标的。算 NAV 必须给它估值 ——
+    找不到价格时**宁可报错也不填默认值**，否则 NAV 凭空变成现金值，
+    仓位预算跟着缩水，而报表上看不出任何异常。
+    """
+    path = data_dir / f"{symbol}.csv"
+    if not path.exists():
+        return None
+    last: Optional[Decimal] = None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            fh.readline()
+            for line in fh:
+                parts = line.rstrip("\n").split(",")
+                if len(parts) < 3:
+                    continue
+                try:
+                    bar_day = date.fromisoformat(parts[0])
+                except ValueError:
+                    continue
+                if bar_day > day:
+                    break
+                if parts[2] in ("0", "0.0", ""):
+                    continue                      # 停牌行，收盘价是补出来的
+                try:
+                    last = Decimal(parts[2])
+                except Exception:                 # noqa: BLE001
+                    continue
+    except OSError:
+        return None
+    return last
+
+
 # --------------------------------------------------------------------------- #
 #  runner：真跑一次 run_once
 # --------------------------------------------------------------------------- #
@@ -169,14 +213,18 @@ class AshareRunner:
     """
     把 `RebalanceScheduler` 的 `runner(spec, day)` 接到 B8 的运行时上。
 
-    账本、OMS、风控都留在进程内并跨拍复用 —— 因为 `Ledger` 还没有落盘能力。
-    独立进程跑 = 新账本 = 从空仓开始，这一点会在输出里明说，不假装它是对的。
+    B10 起账本与风控状态都**落盘**（给了 `ledger_path` / `risk_path` 时）：
+    首次启动才按 `nav` 建仓，之后每拍结束整份快照原子替换。下一拍哪怕是新进程、
+    新开机，也从同一份持仓继续算差额。不给路径时退回进程内账本（测试用）。
     """
 
     def __init__(self, *, pack_path: Path, data_dir: Path, venue: str,
                  params: Dict[str, str], symbols: int = 8, bars: int = 130,
                  min_bars: int = 40, nav: Decimal = D("100000"),
-                 quota_pct: Decimal = D("0.4"), fresh_ledger: bool = True,
+                 quota_pct: Decimal = D("0.4"),
+                 ledger_path: Optional[Path] = None,
+                 risk_path: Optional[Path] = None,
+                 nav_mode: Optional[str] = None,
                  dry_frame_day: Optional[date] = None) -> None:
         self.pack_path = pack_path
         self.data_dir = data_dir
@@ -187,11 +235,14 @@ class AshareRunner:
         self.min_bars = min_bars
         self.nav = D(nav)
         self.quota_pct = D(quota_pct)
-        self.fresh_ledger = fresh_ledger
-        self.ledger = Ledger(base_currency="CNY")
-        self.ledger.deposit(ACCOUNT, "CNY", self.nav,
-                            ts=datetime.now(timezone.utc))
-        self.risk_state = RiskState()
+        self.ledger_store = LedgerStore(str(ledger_path)) if ledger_path else None
+        self.risk_store = RiskStateStore(str(risk_path)) if risk_path else None
+        # 预算口径：有持久账本时**必须**用真实 NAV。用固定初始资金会让上一拍的
+        # 盈亏永远不进预算 —— NAV 涨到 12 万，目标仓位还按 10 万的 40% 算。
+        self.nav_mode = nav_mode or ("ledger" if self.ledger_store else "fixed")
+        self.ledger_status = "in-memory"
+        self.ledger = self._open_ledger()
+        self.risk_state = self._open_risk_state()
         self.engine = RiskEngine(RiskPolicy(
             max_order_notional_pct=D("25.0"),
             max_strategy_allocation_pct=D("50.0"),
@@ -209,6 +260,100 @@ class AshareRunner:
         self.pack = None
         self._calls = 0
         self._prepare(dry_frame_day or date.today())
+
+    # -- 状态开关 -------------------------------------------------------- #
+
+    def _open_ledger(self) -> Ledger:
+        """
+        取账本：有盘读盘，没盘建仓，坏盘拒绝。
+
+        坏盘时抛 `PreflightAbort` —— 这一拍确实还没做任何事（没有下单），
+        所以清掉 claim 重试是符合事实的。但它会一直失败，直到人来处理：
+        `consecutive_failures` 到 3 次排期卡片就变红。
+        """
+        if self.ledger_store is None:
+            ledger = Ledger(base_currency="CNY")
+            ledger.deposit(ACCOUNT, "CNY", self.nav, ts=datetime.now(timezone.utc))
+            return ledger
+        result = self.ledger_store.load(base_currency="CNY", allow_absent=True)
+        if result.ledger is None:
+            raise PreflightAbort(
+                f"账本不可用（{result.status}）：{result.detail}。"
+                "拒绝以空账本继续 —— 空账本会把已有持仓当成 0 重新买一遍。")
+        if result.status == "absent":
+            result.ledger.deposit(ACCOUNT, "CNY", self.nav,
+                                  ts=datetime.now(timezone.utc))
+            self.ledger_store.save(result.ledger)
+            self.ledger_status = "created"
+            return result.ledger
+        self.ledger_status = result.status
+        if result.status == "recovered_from_backup":
+            self.ledger_status = "from-backup"
+        return result.ledger
+
+    def _open_risk_state(self) -> RiskState:
+        """熔断记忆不能按 NORMAL 重启 —— 亏 15% 被 HALTED，重启就复位等于没有熔断。"""
+        if self.risk_store is None:
+            return RiskState()
+        state, info = self.risk_store.load_state()
+        if state is None:
+            if info.status == "absent":
+                return RiskState()
+            raise PreflightAbort(
+                f"风控状态不可用（{info.status}）：{info.detail}。"
+                "读不出来就不能当它是 NORMAL。")
+        return state
+
+    def _persist(self) -> None:
+        """
+        落盘。失败必须抛 —— 落盘失败却当成功，下一拍会从旧持仓再买一遍。
+
+        顺序是先账本后风控：账本是"发生了什么"，风控是"还能不能做"。
+        中间崩掉的话，排期那张 claim 还挂着，下一拍直接 REFUSED_IN_DOUBT
+        等人工确认，不会带着半套状态继续跑。
+        """
+        if self.ledger_store is not None:
+            try:
+                self.ledger_store.save(self.ledger)
+            except OSError as exc:
+                raise RuntimeError(f"账本落盘失败：{exc}") from exc
+        if self.risk_store is not None:
+            try:
+                self.risk_store.save_state(self.risk_state)
+            except OSError as exc:
+                raise RuntimeError(f"风控状态落盘失败：{exc}") from exc
+
+    # -- 估值 ------------------------------------------------------------ #
+
+    def _price_map(self, frame: MarketFrame, day: date) -> Dict[Tuple[str, str], Decimal]:
+        """
+        给"当前持仓 + 今日 frame"凑齐估值价格。
+
+        持仓里掉了出股票池前 N 的标的，当日 frame 里没有 —— 那也必须给它
+        找到收盘价，否则 NAV 会少算一块，仓位预算跟着缩水。找不到就报错。
+        """
+        prices: Dict[Tuple[str, str], Decimal] = {
+            (self.venue, name): series.last()
+            for name, series in frame.series.items()
+        }
+        missing: List[str] = []
+        for key in self.ledger.positions():
+            if key in prices:
+                continue
+            price = last_close(self.data_dir, key[1], day)
+            if price is None:
+                missing.append(f"{key[0]}|{key[1]}")
+            else:
+                prices[key] = price
+        if missing:
+            raise PreflightAbort(
+                "缺少估值价格，拒绝用假价格算 NAV：" + "、".join(missing[:5]))
+        return prices
+
+    def _budget_nav(self, frame: MarketFrame, day: date) -> Decimal:
+        if self.nav_mode == "fixed":
+            return self.nav
+        return self.ledger.nav(self._price_map(frame, day))
 
     def _prepare(self, day: date) -> None:
         frame, stale = build_frame_for_day(
@@ -231,6 +376,9 @@ class AshareRunner:
         if not frame.series:
             raise PreflightAbort(f"{day} 之前没有可用行情")
 
+        # 预算口径必须与账本一致：NAV 是"现在有多少钱"，不是"当初放了多少钱"
+        budget = self._budget_nav(frame, day)
+
         self._calls += 1
         policy = StrategyPolicy(strategy_id=spec.strategy_id, venue=self.venue,
                                quota_pct=self.quota_pct)
@@ -241,13 +389,17 @@ class AshareRunner:
                                       quote_ccy="CNY")))
         report = runtime.run_once(
             frame, [StrategyRun(self.pack, self.params)],
-            nav=self.nav, now=frame.as_of,
-            allocations={spec.strategy_id: allocate(policy, self.nav)},
+            nav=budget, now=frame.as_of,
+            allocations={spec.strategy_id: allocate(policy, budget)},
             policies={spec.strategy_id: policy}, risk_state=self.risk_state)
+
+        # 成交已经写进账本，此刻不落盘 = 下一拍从旧持仓再来一遍
+        self._persist()
 
         detail = report.summary()
         if stale:
             detail += f"；{len(stale)} 只标的当日无 bar（{', '.join(stale[:3])}…）"
+        detail += f"；NAV {budget}"
         if self._calls > 1:
             detail += "；本进程内第 %d 拍" % self._calls
         return RunOutcome(
@@ -344,6 +496,8 @@ def make_scheduler(args, *, runner=None) -> RebalanceScheduler:
             venue=args.venue, params=_parse_sets(args.set),
             symbols=args.symbols, bars=args.bars, min_bars=args.min_bars,
             nav=D(args.nav),
+            ledger_path=Path(args.ledger) if args.ledger else LEDGER_PATH,
+            risk_path=Path(args.risk) if args.risk else RISK_PATH,
         )
     return RebalanceScheduler(calendar=cal, store=store, runner=runner,
                               close_at=time(15, 0), tz_name="Asia/Shanghai",
@@ -473,6 +627,23 @@ def cmd_plan(args) -> int:
     return 0
 
 
+def tick_exit_code(report) -> int:
+    """
+    一拍 → 退出码。抽成纯函数是因为它是 cron 的报警线，必须能单独测。
+
+    0  正常（跑了 / 没到期 / 今天不是交易日 / 已跑过）
+    1  有 in_doubt 记录，要人确认"那天到底下没下单"
+    2  整拍被拒或跑失败 —— 等于漏拍，不能安静过去
+    """
+    if report is None:
+        return 0
+    if report.refused or report.failed:
+        return 2
+    if report.needs_attention:
+        return 1
+    return 0
+
+
 def cmd_tick(args) -> int:
     sched = make_scheduler(args)
     register_default(sched, args)
@@ -505,10 +676,17 @@ def cmd_tick(args) -> int:
     elif total_ran:
         print(f"\n✅ 本次共执行 {total_ran} 次调仓。")
         runner = getattr(sched, "runner", None)
-        if isinstance(runner, AshareRunner) and runner._calls:
-            print("⚠️  账本是进程内的：独立进程再跑一次将从空仓开始建仓。"
-                  "连续多拍请用 --repeat 在一次进程里推。")
-    return 1 if (last and last.needs_attention) else 0
+        if isinstance(runner, AshareRunner):
+            where = ("进程内账本（测试用）" if runner.ledger_store is None
+                     else str(Path(runner.ledger_store.path).relative_to(ROOT)))
+            print(f"   账本：{where}  状态={runner.ledger_status}  "
+                  f"分录={runner.ledger.entry_count}  "
+                  f"净入金={runner.ledger.net_deposits_base}")
+            print("   下一拍（含新进程）从这份持仓继续算差额。")
+
+    # 退出码就是 cron 的报警线，"拒绝运行"和"跑失败"都不能返回 0：
+    # 日历没校准导致整拍被拒，等于今天该调仓却没调 —— 这是漏拍，不是"今天没事"。
+    return tick_exit_code(last)
 
 
 def cmd_resolve(args) -> int:
@@ -535,7 +713,77 @@ def _parse_sets(pairs: Sequence[str]) -> Dict[str, str]:
     return out
 
 
-def main() -> int:
+def cmd_ledger(args) -> int:
+    """
+    账本运维：看状态 / 校验 / 归档重置。
+
+    `--reset` 必须显式加 `--yes`，而且**先改名归档再删** —— 账本删了没有第二次
+    机会，而这个命令离 `rm` 只有一步之遥，所以不给"默认重置"的入口。
+    """
+    path = Path(args.ledger) if args.ledger else LEDGER_PATH
+    risk_path = Path(args.risk) if args.risk else RISK_PATH
+    store = LedgerStore(str(path))
+    risk = RiskStateStore(str(risk_path))
+
+    if args.reset:
+        if not args.yes:
+            print("❌ 重置账本要显式加 --yes（会先归档成 .reset-<时间戳>）。",
+                  file=sys.stderr)
+            return 2
+        if not store.exists():
+            print("没有账本文件，无需重置。")
+            return 0
+        tag = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        archived = [p for p in (store.archive(f"reset-{tag}"),
+                                risk.archive(f"reset-{tag}")) if p]
+        print("已归档：")
+        for item in archived:
+            print(f"  {_rel(item)}")
+        print("下一拍会按 --nav 重新建仓。")
+        return 0
+
+    info = store.verify()
+    if args.json:
+        risk_state, risk_info = risk.load_state()
+        print(json.dumps({"ledger": info, "risk": risk_info.to_dict()},
+                         ensure_ascii=False, indent=1))
+        return 0
+
+    flag = "🟢" if info["status"] in ("ok", "absent") else "🔴"
+    print(f"{flag} 账本    {_rel(path)}")
+    print(f"   状态      {info['status']}  {info.get('detail', '')}")
+    if info["exists"]:
+        print(f"   备份      {'有' if info['bak_exists'] else '无'}"
+              f"    写入 {info.get('saved_at', '')}")
+        print(f"   分录      {info.get('entry_count', 0)} 条"
+              f"    幂等键 {info.get('ids_rebuilt', 0)} 个")
+        print(f"   现金      {info.get('cash_lines', 0)} 个(账户×币种)"
+              f"    持仓 {info.get('positions', 0)} 只")
+        print(f"   净入金    {info.get('net_deposits_base', '-')}")
+    else:
+        print("   还没有落过盘 —— 下一拍会按 --nav 建仓")
+
+    risk_state, risk_info = risk.load_state()
+    rflag = "🟢" if risk_info.status in ("ok", "absent") else "🔴"
+    print(f"\n{rflag} 风控态  {_rel(risk_path)}")
+    print(f"   状态      {risk_info.status}  {risk_info.detail}")
+    if risk_state is not None:
+        print(f"   权限      {risk_state.permission_level.value}"
+              f"    回撤 {risk_state.drawdown_pct}%")
+        if risk_state.halted_reasons:
+            print(f"   熔断原因  {'、'.join(risk_state.halted_reasons)}")
+    return 0 if info["status"] in ("ok", "absent") else 1
+
+
+def _rel(path) -> str:
+    """尽量显示相对项目根的路径，绝对路径原样输出。"""
+    try:
+        return str(Path(path).relative_to(ROOT))
+    except ValueError:
+        return str(path)
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="QuantOS 策略排期调度")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -546,7 +794,9 @@ def main() -> int:
         p.add_argument("--symbols", type=int, default=8)
         p.add_argument("--bars", type=int, default=130)
         p.add_argument("--min-bars", type=int, default=40)
-        p.add_argument("--nav", default="100000")
+        p.add_argument("--nav", default="100000", help="首次建仓的初始资金（之后按账本 NAV）")
+        p.add_argument("--ledger", default="", help="账本文件（默认 state/quantos/ashare_ledger.json）")
+        p.add_argument("--risk", default="", help="风控状态文件（默认 state/quantos/ashare_risk.json）")
         p.add_argument("--settle-minutes", type=int, default=30)
         p.add_argument("--set", action="append", default=[], metavar="K=V")
         p.add_argument("--anchor", default="", help="锚点交易日（默认当年第一个交易日）")
@@ -586,10 +836,17 @@ def main() -> int:
     p_res.add_argument("--actor", default="human:owner")
     p_res.add_argument("--reason", required=True)
 
-    args = ap.parse_args()
+    p_led = sub.add_parser("ledger", help="账本：状态 / 校验 / 归档重置")
+    p_led.add_argument("--ledger", default="", help="账本文件（默认 state/quantos/ashare_ledger.json）")
+    p_led.add_argument("--risk", default="", help="风控状态文件（默认 state/quantos/ashare_risk.json）")
+    p_led.add_argument("--reset", action="store_true", help="归档并删除账本（需 --yes）")
+    p_led.add_argument("--yes", action="store_true", help="确认重置")
+    p_led.add_argument("--json", action="store_true")
+
+    args = ap.parse_args(argv)
     handler = {"calendar": cmd_calendar, "status": cmd_status,
                "plan": cmd_plan, "tick": cmd_tick,
-               "resolve": cmd_resolve}[args.cmd]
+               "resolve": cmd_resolve, "ledger": cmd_ledger}[args.cmd]
     try:
         return handler(args)
     except (ScheduleError, CalendarError) as exc:

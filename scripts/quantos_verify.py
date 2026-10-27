@@ -31,6 +31,7 @@ SUITES = [
     ("B7 估计层与公司行动（协方差/分红/拆股/上屏）", "quantos_selftest_b7.py"),
     ("B8 策略运行时（契约/包导入/全链路）", "quantos_selftest_b8.py"),
     ("B9 交易日历与策略排期（锚点/幂等/时间口径）", "quantos_selftest_b9.py"),
+    ("B10 账本落盘与进程编排（恢复/幂等/cron）", "quantos_selftest_b10.py"),
 ]
 
 
