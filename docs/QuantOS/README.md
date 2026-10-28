@@ -11,6 +11,9 @@
 | [`01-现状差距分析.md`](01-现状差距分析.md) | 现在已经有什么？还缺什么？ | 排期、判断"能不能复用" |
 | [`02-服务数据契约.md`](02-服务数据契约.md) | 五个服务之间的字段、状态机、错误语义 | 写代码前必读，验收依据 |
 | [`03-推进路线图.md`](03-推进路线图.md) | 先做什么后做什么？怎么算做完？ | 排期与验收 |
+| [`04-未完成清单.md`](04-未完成清单.md) | 还差什么？哪些是有意不做的？ | 接手前先看这里 |
+| [`05-策略包格式.md`](05-策略包格式.md) | 一个策略包长什么样？怎么进来？ | 写策略时 |
+| [`06-执行状态总表.md`](06-执行状态总表.md) | **46 条需求逐条是 ✅ / 🟡 / ❌？证据在哪？** | 任何时候想知道「现在到哪了」 |
 
 ## 代码位置
 
@@ -52,6 +55,7 @@
 | 策略灰度路由与回滚 | `quantos_core/canary.py` | ✅ B6 |
 | AI 研究通道（只读 + AST 隔离体检） | `quantos_core/ai_research.py` | ✅ B6 |
 | 协方差估计（σ/ρ/收缩/正定性/自由度诊断） | `quantos_core/covariance.py` | ✅ B7 |
+| 因子模型（四个特征因子 / 载荷回归 / Σ=B·F·Bᵀ+diag(Ψ)） | `quantos_core/factors.py` | ✅ B13 |
 | 策略接口契约（MANIFEST / compute / 行情 frame / 信号形态） | `quantos_core/strategy_api.py` | ✅ B8 |
 | 策略包导入（AST 体检 / 指纹 / 干跑 / 准入） | `quantos_core/strategy_pack.py` | ✅ B8 |
 | 策略运行时（信号 → 意图 → 净额 → 风控 → 成交 → 账本） | `quantos_core/strategy_runtime.py` | ✅ B8 |
@@ -77,9 +81,10 @@
 跑全部验收：
 
 ```bash
-.venv/bin/python scripts/quantos_verify.py     # 15 套件 / 1788 条断言
+.venv/bin/python scripts/quantos_verify.py     # 16 套件 / 1882 条断言
 .venv/bin/python scripts/quantos_crypto_check.py   # Crypto 接入体检（不联网）
 .venv/bin/python scripts/quantos_risk_check.py --source ashare --tail 400   # 真实 A 股估一次 σ
+.venv/bin/python scripts/quantos_risk_check.py --model factor --names 200    # 因子口径（B13）：794 只也能估
 .venv/bin/python scripts/quantos_risk_check.py --demo --shrinkage 0.5      # 合成数据看收缩效果
 .venv/bin/python scripts/quantos_strategy_import.py --pack research/strategy_packs/ashare_ew20.strat.py   # 策略包导入体检
 .venv/bin/python scripts/quantos_schedule.py calendar --build   # 重建 A 股交易日历并对账
@@ -117,6 +122,7 @@
 .venv/bin/python scripts/quantos_selftest_b10.py    # B10 账本落盘       126 条
 .venv/bin/python scripts/quantos_selftest_b11.py    # B11 真实网关       142 条
 .venv/bin/python scripts/quantos_selftest_b12.py    # B12 回测引擎       161 条
+.venv/bin/python scripts/quantos_selftest_b13.py    # B13 因子模型        94 条
 .venv/bin/python scripts/quantos_ops_check.py --json # 同上，给 CI 用
 ```
 
@@ -170,6 +176,7 @@ curl -s http://127.0.0.1:8787/api/ops/portfolio    # 风险模型 / 灰度 / AI 
 | B10 | 账本落盘与进程编排 | ✅ 代码完成 2026-10-27 | T-1001~T-1004 交付，126 条；快照落盘与恢复/幂等索引重建/cron 一拍一进程 |
 | B11 | 真实网关（Alpaca 纸面） | ✅ 代码完成 2026-10-27 | T-1101~T-1105 交付，142 条；端点双开关/错误二分/幂等/撤单两步/网关卡片 |
 | B12 | 回测引擎 | ✅ 代码完成 2026-10-27 | T-1201~T-1206 交付，161 条；面板/撮合/驱动的无未来函数保证 + 指标口径 + 与手工基线对账 |
+| B13 | 因子模型 | ✅ 代码完成 2026-10-28 | T-1301~T-1307 交付，94 条；四个特征因子 + 特征组合收益 + 载荷回归 + Σ=B·F·Bᵀ+diag(Ψ)；794 只参数从 315,615 降到 3,980 |
 
 ### B0 交付明细
 
@@ -332,7 +339,7 @@ curl -s http://127.0.0.1:8787/api/ops/portfolio    # 风险模型 / 灰度 / AI 
 | **Crypto 与股票共用一个日界** | 幂等键含日期、日终与归因按 UTC 日切。加密 24/7 意味着"日"是人为约定。若以后要按交易所结算日算账，需重新定义日界 | 正式多市场记账时 |
 | **资金费符号只按 CCXT 统一口径处理** | 适配器把 CCXT 的"现金流方向"取反成"费用方向"。若某场所 `info` 层另有约定，第一笔真实结算会由 `FundingReconciler` 抓出金额差异，但**方向错要人看** | 首次真实结算后核对 |
 | **估计出的 σ/ρ 只代表历史窗口** | B7 有了估计层，但「给定假设怎么摊」与「假设会不会变」是两件事。模型 > 30 天判不可信，**而 30 天这个阈值没有依据**，没有证据说 29 天一定安全。滚动重估与 ρ 敏感性分析未做 | 需要持续研究 |
-| **协方差参数个数是 O(n²)** | n 标的要估 `n + n(n-1)/2` 个参数；794 只 A 股需要 315,271 个参数而观测数只有 O(T)。实际只能压到几十只或改用因子结构。**因子模型未实现** | 组合标的数上升时 |
+| ~~协方差参数个数是 O(n²)~~ | ✅ **B13 已解除**：换成因子结构后参数是 `n·k + k(k+1)/2 + n`，794 只从 315,615 降到 3,980（降 79 倍）。**但参数少了不等于估计准了**：k 个因子解释不了的共同变动会落进残差，相关性被系统性低估（实测残差占比 74%）—— 这条从「容量问题」变成了「口径问题」 | 组合标的数上升时（残留的是口径风险） |
 | **页面探针是 DOM 桩，不是浏览器** | `page_probe.js` 只验证「渲染出来的数字等于后端 JSON」，能抓数字漂移和漏字段，**抓不到 CSS 布局问题**。布局另用 headless Chrome 截图人工核对（1440 / 500 两个宽度）；390px 真机宽度靠命令行验证不了 | 持续（需要真机抽检） |
 | **风险预算与固定配额是两套口径** | 两者都产出 `quota_pct`，谁生效由配置决定。同时用两套算同一个策略，两边都会说自己对。`budgets_from_policies()` 全 0 时返回空字典，就是这个切换开关 | 持续（不要同时开） |
 | **策略级风险归因在净额为 0 时无意义** | 对锁组合的占比无法按净额切，给 0 并告警。真实风险（基差、两腿时差）未建模 | 需要基差模型时 |

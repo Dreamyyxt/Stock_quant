@@ -136,10 +136,113 @@ def bar(text: str) -> None:
     print("─" * 72)
 
 
+def run_factor_mode(args) -> int:
+    """
+    因子口径体检（B13）。
+
+    与样本口径共用同一个体检脚本、同一份数据、同一个落盘路径 —— 只是换了
+    估计方法。为什么不做成第二个脚本：**两套脚本会漂移**，漂移之后
+    「同一个 σ 哪个对」就没人说得清了。这里唯一的差别由 `--model` 决定。
+    """
+    from quantos_core.factors import (
+        FactorConfig, ReturnPanel, describe_model, estimate_factor_model,
+    )
+
+    bar("0. 因子口径（B13：把参数从 O(n²) 降到 O(n·k)）")
+    print("  Σ = B·F·Bᵀ + diag(Ψ)。因子是「等权特征组合」，不是 PCA ——")
+    print("  PCA 载荷不可解释、符号还会在相邻窗口翻转，追不到「σ 从哪来」。")
+
+    try:
+        panel = ReturnPanel.load(args.data, max_names=args.names)
+    except Exception as exc:                        # noqa: BLE001
+        bar("1. 读数据失败")
+        print(f"  {type(exc).__name__}: {exc}")
+        return 1
+
+    bar("1. 面板")
+    print(f"  交易日 {len(panel.days)} 天（{panel.days[0]}~{panel.days[-1]}）")
+    print(f"  标的   {len(panel.symbols)} 只")
+    if panel.skipped:
+        print(f"  跳过   {len(panel.skipped)} 只：{list(panel.skipped[:5])}")
+    print("  缺失是 None，不是 0 —— 停牌日不参与截面，也不会被当成「涨 0%」")
+
+    factors = tuple(f.strip() for f in args.factors.split(",") if f.strip())
+    try:
+        cfg = FactorConfig(annualization=args.annualization,
+                           factors=factors,
+                           halflife=args.halflife or None,
+                           min_obs=args.min_obs)
+    except Exception as exc:                        # noqa: BLE001
+        bar("2. 参数不合法")
+        print(f"  {type(exc).__name__}: {exc}")
+        return 1
+
+    bar("2. 估计参数")
+    print(f"  因子       {list(cfg.factors)}")
+    print(f"  年化因子   {cfg.annualization} 日/年")
+    print(f"  半衰期     {cfg.halflife or '不用（等权）'}")
+    print(f"  最少观测   {cfg.min_obs}")
+    print(f"  覆盖率下限 {cfg.min_coverage}　z 截断 ±{cfg.z_clip}")
+
+    try:
+        est = estimate_factor_model(panel, cfg, label="因子口径体检")
+    except Exception as exc:                        # noqa: BLE001
+        bar("3. 估计失败")
+        print(f"  {type(exc).__name__}: {exc}")
+        print("\n  这是**预期行为**：给不出可信模型就停，不返回「凑合能用」的。")
+        return 1
+
+    bar("3. 诊断（口径 / 参数个数 / 解释度）")
+    for line in describe_model(est):
+        print(line)
+
+    bar("4. 载荷（前 10 只，越大越像该因子的多头）")
+    loads = (est.factor_info or {}).get("loadings") or {}
+    head = sorted(loads)[:10]
+    for sym in head:
+        pairs = "  ".join(f"{f}={v}" for f, v in loads[sym].items())
+        print(f"  {sym:10s} {pairs}")
+
+    bar("5. σ（前 10 只）")
+    for sym in sorted(est.vols)[:10]:
+        print(f"  {sym:10s} σ = {str(est.vols[sym]):>12s}"
+              f"   ({float(est.vols[sym]) * 100:5.1f}%)")
+
+    bar("6. 可信度")
+    print(f"  观测数   {est.n_obs}")
+    print(f"  参数个数 {est.n_params}（样本口径要 {(est.factor_info or {}).get('sample_n_params')}）")
+    print(f"  自由度比 {est.dof_ratio}（总量口径）")
+    print("  注：因子口径下「参数数/观测数」不是恰当门槛，逐回归口径见上表；")
+    print("      本脚本不据此自行放行，「仅供参考」这个结论照旧按总量口径给。")
+    print(f"  结论     {'可以用' if est.trustworthy else '仅供参考，不要拿去做风险预算'}")
+    for w in est.warnings:
+        print(f"  ⚠ {w}")
+
+    if args.no_write:
+        bar("落盘")
+        print("  已跳过（--no-write）")
+    else:
+        store = RiskModelStore(args.out)
+        store.save(est)
+        bar("落盘")
+        print(f"  已写入 {args.out}（口径标记 method={est.method} 一起进去）")
+        print(f"  运维面 /api/ops/portfolio 会读到它，并显示年龄 "
+              f"{store.age_days():.2f} 天")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="QuantOS 风险模型体检")
     ap.add_argument("--source", default="demo", choices=["demo", "ashare"],
                     help="demo=合成数据；ashare=读 state/ashare/daily 真实日线")
+    ap.add_argument("--model", default="sample", choices=["sample", "factor"],
+                    help="sample=样本矩+收缩（B7）；factor=因子模型（B13）")
+    ap.add_argument("--data", default=os.path.join(_ROOT, "state", "ashare", "daily"),
+                    help="--model factor 时的数据目录")
+    ap.add_argument("--names", type=int, default=200,
+                    help="--model factor 时读多少只（按文件名排序取前 N）")
+    ap.add_argument("--factors", default="market,size,momentum,reversal",
+                    help="--model factor 时用哪些因子（逗号分隔）")
     ap.add_argument("--symbols", default="sh600000,sh600004,sh600009",
                     help="--source ashare 时要读的标的（逗号分隔）")
     ap.add_argument("--tail", type=int, default=250,
@@ -154,6 +257,9 @@ def main(argv=None) -> int:
     ap.add_argument("--out", default=os.path.join(_ROOT, "state/risk/model.json"))
     ap.add_argument("--no-write", action="store_true", help="只算不落盘")
     args = ap.parse_args(argv)
+
+    if args.model == "factor":
+        return run_factor_mode(args)
 
     if args.source == "ashare":
         wanted = [x.strip() for x in args.symbols.split(",") if x.strip()]

@@ -34,6 +34,7 @@ SUITES = [
     ("B10 账本落盘与进程编排（恢复/幂等/cron）", "quantos_selftest_b10.py"),
     ("B11 真实网关（纸面连通/幂等/撤单两步/上屏）", "quantos_selftest_b11.py"),
     ("B12 回测引擎（面板/撮合/无未来函数/指标）", "quantos_selftest_b12.py"),
+    ("B13 因子模型（因子收益/载荷/Σ/自由度）", "quantos_selftest_b13.py"),
 ]
 
 

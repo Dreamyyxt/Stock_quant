@@ -45,7 +45,7 @@ import tempfile
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from quantos_core.contracts import ContractViolation, D, q, utcnow
 from quantos_core.risk_budget import RiskModel
@@ -204,6 +204,18 @@ class CovarianceEstimate:
     #: 只报收缩后的值，看的人会以为 0.62 是估出来的，而不是被人为拉过去的。
     #: 空字典 = 没做收缩。
     raw_corr: Dict[Tuple[str, str], Decimal] = field(default_factory=dict)
+    #: 估计口径。`"sample"` = 样本矩 + 收缩；`"factor"` = 因子模型（B13）。
+    #: 这个字段必须跟着结果走：同一个 ρ 在两种口径下的含义完全不同 ——
+    #: 样本口径的 ρ 是"这两只过去一起动"，因子口径的 ρ 是"它们对同一批
+    #: 因子有相似的载荷 + 各自的残差"。只报数字不报口径，等于让读的人
+    #: 自己猜它是估出来的还是算出来的。
+    method: str = "sample"
+    #: 因子模型的自由度覆盖。None = 用样本口径的 `n + n(n-1)/2`。
+    #: 因子模型要估 `n·k + k(k+1)/2 + n` 个参数，是 O(n·k) 而不是 O(n²) ——
+    #: 分母不跟着换，`dof_ratio` 会把一个够用的模型判成"仅供参考"。
+    n_params_override: Optional[int] = None
+    #: 因子诊断（因子收益序列、载荷、解释度、残差占比）。样本口径下为空。
+    factor_info: Dict[str, Any] = field(default_factory=dict)
 
     # -- 诊断 ------------------------------------------------------------ #
 
@@ -216,6 +228,9 @@ class CovarianceEstimate:
         5 个标的有 15 个参数，40 个观测意味着每个参数只有 2.7 个自由度 ——
         而 n_obs/n_assets 会给出 8，看起来还挺宽裕。
         """
+        if self.n_params_override is not None:
+            # 因子口径：参数个数由模型结构定，不是由标的数定。
+            return int(self.n_params_override)
         n = self.n_assets
         return n + n * (n - 1) // 2
 
@@ -267,6 +282,9 @@ class CovarianceEstimate:
 
     def to_dict(self) -> Dict:
         return {
+            "method": self.method,
+            "n_params": self.n_params,
+            "factor_info": self.factor_info,
             "vols": {k: str(v) for k, v in self.vols.items()},
             "corr": {f"{a}|{b}": str(v) for (a, b), v in self.corr.items()},
             "raw_corr": {f"{a}|{b}": str(v) for (a, b), v in self.raw_corr.items()},
@@ -290,7 +308,8 @@ class CovarianceEstimate:
                 f"{self.window_start}~{self.window_end} · "
                 f"年化 {self.annualization} 日")
         tail = "可信" if self.trustworthy else "仅供参考"
-        return f"{head} · 自由度比 {self.dof_ratio} · {tail}"
+        mode = " · 因子口径" if self.method == "factor" else ""
+        return f"{head}{mode} · 自由度比 {self.dof_ratio} · {tail}"
 
 
 # --------------------------------------------------------------------------- #
@@ -776,4 +795,8 @@ def estimate_from_dict(d: Mapping) -> CovarianceEstimate:
         label=str(d.get("label") or ""),
         raw_corr={tuple(k.split("|", 1)): D(v)        # type: ignore[misc]
                   for k, v in (d.get("raw_corr") or {}).items()},
+        method=str(d.get("method") or "sample"),
+        n_params_override=(int(d["n_params"]) if d.get("n_params") is not None
+                           and str(d.get("method") or "sample") == "factor" else None),
+        factor_info=dict(d.get("factor_info") or {}),
     )
