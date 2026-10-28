@@ -676,6 +676,57 @@ class _NoGateway:
         return False
 
 
+def _catalog_provider(fault: str):
+    """
+    策略池（B14）的**只读**来源。
+
+    与 `_gateway_provider` 同一条规矩：给函数不给对象。看板能看见
+    「ew20 年化 18.78%、回撤 -26.1%」，但拿不到策略对象 —— 也就是说
+    它没有能力重跑回测、改参数或把某个策略推上线。
+
+    缓存 15 秒：和页面刷新同频。归一化要扫 6 个 summary 加一次 glob，
+    不缓存等于每 15 秒做一次多余的磁盘扫描。
+    """
+    from quantos_core.catalog import load_catalog
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cache = {"at": 0.0, "payload": None}
+
+    def snapshot():
+        import time as _t
+        if cache["payload"] is not None and _t.time() - cache["at"] < 15:
+            return cache["payload"]
+        payload = load_catalog(root).to_dict()
+        cache.update(at=_t.time(), payload=payload)
+        return payload
+
+    return snapshot
+
+
+def _paper_provider(fault: str):
+    """
+    影子盘（B14）的**只读**来源。
+
+    故意不提供「推进一拍 / 结算」的写入口：`paper_trade.py settle` 会改
+    `state/ashare/ew20_paper_book.json` 这个真实账本，那是人的决定。
+    一个可能被投到内网的面板不该握着改账本的按钮。
+    """
+    from quantos_core.catalog import load_paper
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cache = {"at": 0.0, "payload": None}
+
+    def snapshot():
+        import time as _t
+        if cache["payload"] is not None and _t.time() - cache["at"] < 15:
+            return cache["payload"]
+        payload = load_paper(root).to_dict()
+        cache.update(at=_t.time(), payload=payload)
+        return payload
+
+    return snapshot
+
+
 def _make_target(symbol: str, notional: Decimal, strategy: str,
                  price: Decimal) -> TargetPosition:
     qty = q(notional / price, 8)
@@ -840,7 +891,9 @@ def main(argv=None) -> int:
                          research_inbox=rt["research_inbox"],
                          schedule_provider=_schedule_provider(args.fault),
                          ledger_provider=_ledger_provider(args.fault),
-                         gateway_provider=_gateway_provider(args.fault))
+                         gateway_provider=_gateway_provider(args.fault),
+                         catalog_provider=_catalog_provider(args.fault),
+                         paper_provider=_paper_provider(args.fault))
 
     if args.once and args.eod:
         print(json.dumps(rt["eod_run"].to_dict(), ensure_ascii=False, indent=2,
@@ -865,6 +918,8 @@ def main(argv=None) -> int:
     print(f"  组合视图：{server.url}/api/ops/portfolio")
     print(f"  策略排期：{server.url}/api/ops/schedule")
     print(f"  账本状态：{server.url}/api/ops/ledger")
+    print(f"  策略池　：{server.url}/api/ops/catalog")
+    print(f"  影子盘　：{server.url}/api/ops/paper")
     print(f"  写操作：{'已启用（需 X-Ops-Token）' if args.token else '已禁用（未配置 QUANTOS_OPS_TOKEN）'}")
     if html is None:
         print(f"  [警告] 找不到页面文件 {args.html}，只提供 API")

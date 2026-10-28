@@ -56,6 +56,7 @@
 | AI 研究通道（只读 + AST 隔离体检） | `quantos_core/ai_research.py` | ✅ B6 |
 | 协方差估计（σ/ρ/收缩/正定性/自由度诊断） | `quantos_core/covariance.py` | ✅ B7 |
 | 因子模型（四个特征因子 / 载荷回归 / Σ=B·F·Bᵀ+diag(Ψ)） | `quantos_core/factors.py` | ✅ B13 |
+| 策略池与影子盘归一化（四种异构结构 → 两种 payload） | `quantos_core/catalog.py` | ✅ B14 |
 | 策略接口契约（MANIFEST / compute / 行情 frame / 信号形态） | `quantos_core/strategy_api.py` | ✅ B8 |
 | 策略包导入（AST 体检 / 指纹 / 干跑 / 准入） | `quantos_core/strategy_pack.py` | ✅ B8 |
 | 策略运行时（信号 → 意图 → 净额 → 风控 → 成交 → 账本） | `quantos_core/strategy_runtime.py` | ✅ B8 |
@@ -81,7 +82,7 @@
 跑全部验收：
 
 ```bash
-.venv/bin/python scripts/quantos_verify.py     # 16 套件 / 1882 条断言
+.venv/bin/python scripts/quantos_verify.py     # 17 套件 / 2008 条断言
 .venv/bin/python scripts/quantos_crypto_check.py   # Crypto 接入体检（不联网）
 .venv/bin/python scripts/quantos_risk_check.py --source ashare --tail 400   # 真实 A 股估一次 σ
 .venv/bin/python scripts/quantos_risk_check.py --model factor --names 200    # 因子口径（B13）：794 只也能估
@@ -123,6 +124,7 @@
 .venv/bin/python scripts/quantos_selftest_b11.py    # B11 真实网关       142 条
 .venv/bin/python scripts/quantos_selftest_b12.py    # B12 回测引擎       161 条
 .venv/bin/python scripts/quantos_selftest_b13.py    # B13 因子模型        94 条
+.venv/bin/python scripts/quantos_selftest_b14.py    # B14 策略池与影子盘 126 条
 .venv/bin/python scripts/quantos_ops_check.py --json # 同上，给 CI 用
 ```
 
@@ -176,6 +178,8 @@ curl -s http://127.0.0.1:8787/api/ops/portfolio    # 风险模型 / 灰度 / AI 
 | B10 | 账本落盘与进程编排 | ✅ 代码完成 2026-10-27 | T-1001~T-1004 交付，126 条；快照落盘与恢复/幂等索引重建/cron 一拍一进程 |
 | B11 | 真实网关（Alpaca 纸面） | ✅ 代码完成 2026-10-27 | T-1101~T-1105 交付，142 条；端点双开关/错误二分/幂等/撤单两步/网关卡片 |
 | B12 | 回测引擎 | ✅ 代码完成 2026-10-27 | T-1201~T-1206 交付，161 条；面板/撮合/驱动的无未来函数保证 + 指标口径 + 与手工基线对账 |
+| B13 | 因子模型 | ✅ 代码完成 2026-10-28 | 交付 94 条；四因子 + 载荷回归 + Σ=B·F·Bᵀ+diag(Ψ)，794 只参数 31.5 万 → 3,980 |
+| B14 | 策略池与影子盘 | ✅ 代码完成 2026-10-28 | 交付 126 条；`catalog` 归一化 + 两个只读端点 + 页面两个视图（6 策略 / 2 影子盘） |
 | B13 | 因子模型 | ✅ 代码完成 2026-10-28 | T-1301~T-1307 交付，94 条；四个特征因子 + 特征组合收益 + 载荷回归 + Σ=B·F·Bᵀ+diag(Ψ)；794 只参数从 315,615 降到 3,980 |
 
 ### B0 交付明细

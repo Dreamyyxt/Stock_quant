@@ -11,6 +11,8 @@ QuantOS 2.0 — 运维中心服务（T-301 / T-303 的 HTTP 面）
   GET  /api/ops/snapshot       指标快照（含 overall / root_causes / facts）
   GET  /api/ops/strategies     策略实例列表
   GET  /api/ops/audit?limit=N  审计记录（默认 50 条）
+  GET  /api/ops/catalog        策略池：research 产物归一化后的业绩卡（B14，只读）
+  GET  /api/ops/paper          影子盘：两套账本归一化后的状态（B14，只读）
   POST /api/ops/actions        暂停/恢复/降级/灰度/配额/晋级
 
 安全口径（刻意保守）：
@@ -68,7 +70,8 @@ class OpsService:
                  series=None, live_gate=None,
                  risk_model_store=None, canary_router=None,
                  research_inbox=None, schedule_provider=None,
-                 ledger_provider=None, gateway_provider=None):
+                 ledger_provider=None, gateway_provider=None,
+                 catalog_provider=None, paper_provider=None):
         self.metrics = metrics
         self.registry = registry
         self._prices_provider = prices_provider
@@ -93,6 +96,12 @@ class OpsService:
         #: B11 真实网关（只读）。给的是**只读探针的结果函数**，
         #: 不是 AlpacaGateway 对象 —— 页面绝不能有能力调 place()。
         self.gateway_provider = gateway_provider
+        #: B14 策略池（只读）。给的是「扫描 research 产物后归一化的快照函数」，
+        #: 不是策略对象 —— 看板能看见业绩，不能改策略、不能重跑回测。
+        self.catalog_provider = catalog_provider
+        #: B14 影子盘（只读）。同上：只给快照，**没有任何端点能推进影子盘**。
+        #: 结算必须由人在命令行跑 `paper_trade.py settle`，因为它会改真实账本。
+        self.paper_provider = paper_provider
 
     # -- 读 -------------------------------------------------------------- #
 
@@ -250,6 +259,64 @@ class OpsService:
             return {"as_of": self._clock().isoformat(), "available": False,
                     "reason": f"网关探针失败：{type(exc).__name__}: {exc}",
                     "mode": "error", "healthy": False}
+        payload.setdefault("as_of", self._clock().isoformat())
+        return payload
+
+    def catalog(self) -> Dict[str, Any]:
+        """
+        策略池（B14）。只读。
+
+        这个端点回答的是「我到底有哪些策略、各在什么阶段、赚了多少」——
+        数据来自 `research/*/outputs/*_summary.json` 的归一化结果，
+        **不是**在册实例列表（那是 `strategies()`）。两者必须分开：
+        研究结论不需要注册，注册也不代表有业绩。
+
+        失败时返回 `available: false` + `reason`，**不返回空数组** ——
+        空数组在下拉框里看起来像「一个策略都没有」，会让人以为策略丢了。
+        """
+        if self.catalog_provider is None:
+            return {"as_of": self._clock().isoformat(), "available": False,
+                    "reason": "未接入策略池数据源（research 产物不可达）",
+                    "cards": [], "warnings": [], "unregistered": [],
+                    "counts": {"total": 0, "paper": 0, "research": 0,
+                               "with_missing": 0}}
+        try:
+            payload = dict(self.catalog_provider())
+        except (RuntimeError, OSError, ValueError, KeyError) as exc:
+            return {"as_of": self._clock().isoformat(), "available": False,
+                    "reason": f"策略池归一化失败：{type(exc).__name__}: {exc}",
+                    "cards": [], "warnings": [], "unregistered": [],
+                    "counts": {"total": 0, "paper": 0, "research": 0,
+                               "with_missing": 0}}
+        payload["available"] = True
+        payload.setdefault("as_of", self._clock().isoformat())
+        return payload
+
+    def paper(self) -> Dict[str, Any]:
+        """
+        影子盘（B14）。只读。
+
+        刻意没有「推进一拍」的写端点：结算会改真实账本（
+        `state/ashare/ew20_paper_book.json`），那是人的决定，不是看板的按钮。
+        看板只负责把「现在是什么状态、哪一批委托可能过期了」说清楚。
+
+        `settled` 计数是「有成交的盘数」。两个盘都为 0 时页面必须明说
+        「净值全等于初始资金，这不是不亏不赚，是还没开始记」——
+        否则一条平线会被读成「策略很稳」。
+        """
+        if self.paper_provider is None:
+            return {"as_of": self._clock().isoformat(), "available": False,
+                    "reason": "未接入影子盘账本", "books": [],
+                    "warnings": [], "counts": {"total": 0, "settled": 0,
+                                               "pending": 0}}
+        try:
+            payload = dict(self.paper_provider())
+        except (RuntimeError, OSError, ValueError, KeyError) as exc:
+            return {"as_of": self._clock().isoformat(), "available": False,
+                    "reason": f"影子盘账本读取失败：{type(exc).__name__}: {exc}",
+                    "books": [], "warnings": [],
+                    "counts": {"total": 0, "settled": 0, "pending": 0}}
+        payload["available"] = True
         payload.setdefault("as_of", self._clock().isoformat())
         return payload
 
@@ -413,6 +480,12 @@ class _Handler(BaseHTTPRequestHandler):
 
         if path == "/api/ops/gateway":
             return self._json(HTTPStatus.OK, self.service.gateway())
+
+        if path == "/api/ops/catalog":
+            return self._json(HTTPStatus.OK, self.service.catalog())
+
+        if path == "/api/ops/paper":
+            return self._json(HTTPStatus.OK, self.service.paper())
 
         return self._json(HTTPStatus.NOT_FOUND,
                           {"ok": False, "error": f"未知路径 {path}"})

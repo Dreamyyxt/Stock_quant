@@ -35,6 +35,7 @@ SUITES = [
     ("B11 真实网关（纸面连通/幂等/撤单两步/上屏）", "quantos_selftest_b11.py"),
     ("B12 回测引擎（面板/撮合/无未来函数/指标）", "quantos_selftest_b12.py"),
     ("B13 因子模型（因子收益/载荷/Σ/自由度）", "quantos_selftest_b13.py"),
+    ("B14 策略池与影子盘（归一化/只读/页面契约）", "quantos_selftest_b14.py"),
 ]
 
 
